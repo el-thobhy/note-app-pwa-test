@@ -1,0 +1,122 @@
+:root {
+    --bs-primary: #4e89ff;
+    --bs-success: #28c76f;
+    --bs-warning: #ff9f43;
+    --bs-danger: #ea5455;
+    --sidebar-bg: #0d1b2a;
+    --sidebar-hover: #1b263b;
+    --text-secondary: #6c757d;
+}
+
+/* Global body */
+body {
+    background-color: #f8f9fa;
+    color: #212529;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Card enhancements */
+.card {
+    border: none;
+    border-radius: 1rem;
+    box-shadow: 0 0.25rem 0.5rem rgba(0, 0, 0, 0.05);
+}
+
+.card-title {
+    font-weight: 600;
+    color: #212529;
+}
+
+/* Button custom */
+.btn-primary {
+    background-color: var(--bs-primary);
+    border-color: var(--bs-primary);
+}
+
+    .btn-primary:hover {
+        background-color: #3c6fee;
+        border-color: #3c6fee;
+    }
+
+.btn-success {
+    background-color: var(--bs-success);
+    border-color: var(--bs-success);
+}
+
+.btn-danger {
+    background-color: var(--bs-danger);
+    border-color: var(--bs-danger);
+}
+
+.btn-warning {
+    background-color: var(--bs-warning);
+    border-color: var(--bs-warning);
+}
+
+.btn:focus,
+.btn:active {
+    box-shadow: 0 0 0 0.2rem rgba(78, 137, 255, 0.25);
+}
+
+/* Sidebar styling */
+.sidebar {
+    background-color: var(--sidebar-bg);
+    color: white;
+    min-height: 100vh;
+    padding: 1rem;
+    width: 250px;
+}
+
+    .sidebar .nav-link {
+        color: #ffffff;
+        padding: 0.5rem 1rem;
+        border-radius: 0.5rem;
+        transition: background-color 0.2s ease;
+    }
+
+        .sidebar .nav-link:hover {
+            background-color: var(--sidebar-hover);
+            color: #ffffff;
+        }
+
+        .sidebar .nav-link.active {
+            background-color: var(--bs-primary);
+            color: white;
+        }
+
+/* Footer */
+footer {
+    font-size: 0.9rem;
+    background-color: #ffffff;
+    border-top: 1px solid #dee2e6;
+    color: var(--text-secondary);
+}
+
+/* Modal styling */
+.modal-content {
+    border-radius: 1rem;
+}
+
+.modal-header.bg-danger {
+    background-color: var(--bs-danger) !important;
+}
+
+/* Utility */
+.text-muted {
+    color: var(--text-secondary) !important;
+}
+
+.text-primary {
+    color: var(--bs-primary) !important;
+}
+
+.rounded-4 {
+    border-radius: 1rem !important;
+}
+
+.shadow-sm {
+    box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075) !important;
+}
+.cursor-pointer {
+    cursor: pointer;
+}

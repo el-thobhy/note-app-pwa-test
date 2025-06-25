@@ -1,0 +1,96 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"] - NoteApp</title>
+
+    <!-- Bootstrap & Icons -->
+    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: "Segoe UI", sans-serif;
+            background-color: #f8f9fa;
+        }
+
+        .main-wrapper {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .content-wrapper {
+            flex: 1;
+            display: flex;
+        }
+
+        .offcanvas .offcanvas-body {
+            padding: 0;
+        }
+
+        footer {
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Topbar (mobile only) -->
+    <nav class="navbar navbar-light bg-white border-bottom d-lg-none shadow-sm">
+        <div class="container-fluid">
+            <button class="btn btn-outline-primary" type="button" data-bs-toggle="offcanvas" data-bs-target="#sidebarOffcanvas">
+                <i class="bi bi-list"></i> Menu
+            </button>
+            <span class="navbar-brand fw-semibold">NoteApp</span>
+        </div>
+    </nav>
+
+    <div class="main-wrapper">
+        <div class="content-wrapper">
+            <!-- Sidebar (desktop) -->
+            <div class="d-none d-lg-block bg-white border-end shadow-sm" style="width: 250px;">
+                <partial name="_Sidebar" />
+            </div>
+
+            <!-- Offcanvas Sidebar (mobile) -->
+            <div class="offcanvas offcanvas-start d-lg-none" tabindex="-1" id="sidebarOffcanvas" aria-labelledby="sidebarOffcanvasLabel">
+                <div class="offcanvas-header border-bottom">
+                    <h5 class="offcanvas-title" id="sidebarOffcanvasLabel">Menu</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+                </div>
+                <div class="offcanvas-body p-0">
+                    <partial name="_Sidebar" />
+                </div>
+            </div>
+
+            <!-- Main Content -->
+            <main class="flex-grow-1 p-4">
+                @RenderBody()
+            </main>
+        </div>
+
+        <!-- Footer -->
+        <footer class="border-top text-muted bg-white text-center py-2 shadow-sm">
+         @*    <div class="container">
+                &copy; 2025 - <strong>NoteApp</strong> &middot; <a asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
+            </div> *@
+        </footer>
+    </div>
+
+    <!-- Scripts -->
+    <script src="~/lib/jquery/dist/jquery.min.js"></script>
+    <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="~/js/site.js" asp-append-version="true"></script>
+    <script src="~/tinymce/tinymce.min.js" referrerpolicy="origin"></script>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>

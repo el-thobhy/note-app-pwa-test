@@ -1,0 +1,42 @@
+﻿@model NoteApp.Models.Note
+
+<form id="editNoteForm">
+    @Html.AntiForgeryToken()
+    <div class="modal-header bg-warning">
+        <h5 class="modal-title">Edit Note</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+    </div>
+    <div class="modal-body">
+        <input type="hidden" name="Id" value="@Model.Id" />
+        <input type="hidden" name="UserId" value="@Model.UserId" />
+        <div class="mb-3">
+            <label for="Title" class="form-label">Judul</label>
+            <input type="text" name="Title" value="@Model.Title" class="form-control" required />
+        </div>
+    </div>
+    <div class="modal-footer">
+        <button type="submit" class="btn btn-warning">Simpan Perubahan</button>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+    </div>
+</form>
+
+<script>
+    // Jalankan saat form submit
+    $("#editNoteForm").submit(function (e) {
+        var token = $('input[name="__RequestVerificationToken"]').val();
+
+        e.preventDefault();
+        $.ajax({
+            type: "POST",
+            url: "/Home/Edit",
+            data: $(this).serialize(),
+            headers: {
+                'RequestVerificationToken': token // Harus ada untuk request POST
+            },
+            success: function () {
+                $("#editModal").modal('hide');
+                location.reload();
+            }
+        });
+    });
+</script>

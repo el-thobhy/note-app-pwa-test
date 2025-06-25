@@ -1,0 +1,71 @@
+﻿@{
+    var entries = ViewBag.Entries as List<NoteApp.Models.DailyEntry>;
+    var noteTitle = ViewBag.NoteTitle as string;
+    var queryDate = Context.Request.Query["date"].ToString(); // ambil dari query string
+    string selectedDateStr = "";
+
+    if (!string.IsNullOrEmpty(queryDate))
+    {
+        if (DateTime.TryParse(queryDate, out var parsedDate))
+        {
+            selectedDateStr = parsedDate.ToString("yyyy-MM-dd");
+        }
+    }
+    else
+    {
+        selectedDateStr = DateTime.Today.ToString("yyyy-MM-dd"); // fallback jika tidak ada date
+    }
+}
+<style>
+    .list-group-item.active {
+        background-color: #0d6efd;
+        border-color: #0d6efd;
+        color: #fff;
+    }
+
+</style>
+<aside class="d-flex flex-column h-100 p-3 text-white sidebar" style="background-color: #0d1b2a; width: 250px;">
+    <h5 class="mb-4 text-uppercase fw-bold text-white-50">
+        <i class="bi bi-journal-bookmark me-2"></i>@(noteTitle ?? "Menu")
+    </h5>
+
+    @if (entries != null && entries.Count > 0)
+    {
+        <div class="nav flex-column">
+            @foreach (var entry in entries)
+            {
+                <a href="/Note/Detail?id=@Model.Id&date=@entry.Date.ToString("yyyy-MM-dd")"
+                   class="nav-link text-white rounded-2 mb-1 px-3 py-2 list-group-item list-group-item-action @(entry.Date.ToString("yyyy-MM-dd") == selectedDateStr ? "active" : "")"
+                   style="background-color: #0d1b2a;"
+                   onmouseover="this.style.backgroundColor='#1b263b'"
+                   onmouseout="this.style.backgroundColor='#0d1b2a'">
+                    <i class="bi bi-calendar-event me-2"></i>@entry.Date.ToString("dd MMM yyyy")
+                </a>
+            }
+        </div>
+        <a href="/" class="mt-4 text-white-50 text-decoration-none d-inline-block">
+            <i class="bi bi-arrow-left-circle me-2"></i>Kembali
+        </a>
+    }
+    else
+    {
+        <ul class="nav flex-column">
+            <li class="nav-item mb-2">
+                <a class="nav-link text-white px-3 py-2 rounded-2"
+                   href="/" style="background-color: #0d1b2a;"
+                   onmouseover="this.style.backgroundColor='#1b263b'"
+                   onmouseout="this.style.backgroundColor='#0d1b2a'">
+                    <i class="bi bi-house-door me-2"></i> Home
+                </a>
+            </li>
+            <li class="nav-item mb-2">
+                <a class="nav-link text-white px-3 py-2 rounded-2"
+                   href="/Settings" style="background-color: #0d1b2a;"
+                   onmouseover="this.style.backgroundColor='#1b263b'"
+                   onmouseout="this.style.backgroundColor='#0d1b2a'">
+                    <i class="bi bi-gear me-2"></i> Settings
+                </a>
+            </li>
+        </ul>
+    }
+</aside>

@@ -1,0 +1,81 @@
+﻿@model NoteApp.Models.Note
+
+<style>
+    .modal-content {
+        transition: all 0.3s ease;
+    }
+
+    .modal-header .modal-title {
+        font-size: 1.25rem;
+    }
+</style>
+
+<!-- CREATE Modal -->
+<div class="modal fade" id="createModal" tabindex="-1" aria-labelledby="createModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <form id="createNoteForm" class="modal-content border-0 rounded-4 shadow-sm">
+            @Html.AntiForgeryToken()
+
+            <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title fw-semibold">
+                    <i class="bi bi-plus-circle me-2 text-primary"></i>Buat Note Project Baru
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+            </div>
+
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label for="Title" class="form-label fw-semibold">Judul</label>
+                    <input type="text" class="form-control rounded-3" name="Title" placeholder="Contoh: Roadmap App" required />
+                </div>
+                <input type="hidden" name="UserId" value="tes" />
+            </div>
+
+            <div class="modal-footer border-0 pt-0">
+                <button type="submit" class="btn btn-primary rounded-pill">
+                    <i class="bi bi-save me-1"></i>Simpan
+                </button>
+                <button type="button" class="btn btn-secondary rounded-pill" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle me-1"></i>Batal
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- EDIT Modal (konten di-load via AJAX) -->
+<div class="modal fade" id="editModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div id="editModalContent" class="modal-content border-0 rounded-4 shadow-sm">
+            <!-- Konten akan di-load via AJAX -->
+        </div>
+    </div>
+</div>
+
+<!-- DELETE Modal -->
+<div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <form id="deleteNoteForm" class="modal-content border-0 rounded-4 shadow-sm">
+            <div class="modal-header bg-danger text-white border-0 pb-0 rounded-top-4">
+                <h5 class="modal-title fw-semibold">
+                    <i class="bi bi-trash-fill me-2"></i>Hapus Note
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Tutup"></button>
+            </div>
+
+            <div class="modal-body">
+                <p>Yakin ingin menghapus note <strong id="deleteNoteTitle" class="text-danger"></strong>?</p>
+                <input type="hidden" id="deleteNoteId" name="id" />
+            </div>
+
+            <div class="modal-footer border-0 pt-0">
+                <button type="submit" class="btn btn-danger rounded-pill">
+                    <i class="bi bi-trash me-1"></i>Ya, Hapus
+                </button>
+                <button type="button" class="btn btn-secondary rounded-pill" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle me-1"></i>Batal
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
