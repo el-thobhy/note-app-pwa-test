@@ -1,4 +1,6 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using ELAuth.Helper;
+using Microsoft.AspNetCore.Mvc;
+using NoteApp.Helper;
 using NoteApp.Models;
 using NoteApp.Services;
 
@@ -14,15 +16,17 @@ namespace NoteApp.Controllers
             _noteService = noteService;
             _entryService = entryService;
         }
-
+        [UserIdAuthorize]
         public IActionResult Detail(int id, string? date)
         {
             var note = _noteService.GetNoteById(id);
             if (note == null) return NotFound();
 
-            var selectedDate = string.IsNullOrEmpty(date) ? DateTime.Today : DateTime.Parse(date);
             var entries = _entryService.GetEntriesByNoteId(id);
-            var selectedEntry = entries.FirstOrDefault(e => e.Date.Date == selectedDate.Date);
+            entries = entries.OrderByDescending(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).ToList();
+            DateTime latest = entries.OrderByDescending(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).Select(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).FirstOrDefault();
+            var selectedDate = string.IsNullOrEmpty(date) ? latest : DateTime.Parse(date);
+            var selectedEntry = entries.FirstOrDefault(e => (!string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now) == selectedDate.Date);
 
             ViewBag.SelectedDate = selectedDate;
             ViewBag.Entries = entries;
@@ -36,8 +40,10 @@ namespace NoteApp.Controllers
         [ValidateAntiForgeryToken]
         public IActionResult AddEntry(DailyEntry entry)
         {
-            entry.Created_by = User.Identity?.Name ?? "guest";
-            entry.UserId = User.Identity?.Name ?? "guest";
+            var token = HttpContext.Session.GetString("Token");
+            string? userId = JwtHelper.GetName(token);
+            entry.Created_by = userId;
+            entry.UserId = userId ?? "guest";
             _entryService.AddEntry(entry);
             return Ok();
         }
@@ -45,7 +51,9 @@ namespace NoteApp.Controllers
         [HttpPost]
         public IActionResult UpdateEntry(DailyEntry entry)
         {
-            entry.Modified_by = User.Identity?.Name ?? "guest";
+            var token = HttpContext.Session.GetString("Token");
+            string? userId = JwtHelper.GetName(token);
+            entry.Modified_by = userId;
             _entryService.UpdateEntry(entry);
             return Ok();
         }

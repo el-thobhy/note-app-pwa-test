@@ -3,18 +3,27 @@
     var noteTitle = ViewBag.NoteTitle as string;
     var queryDate = Context.Request.Query["date"].ToString(); // ambil dari query string
     string selectedDateStr = "";
+    string viewDate = "";
 
     if (!string.IsNullOrEmpty(queryDate))
     {
         if (DateTime.TryParse(queryDate, out var parsedDate))
         {
             selectedDateStr = parsedDate.ToString("yyyy-MM-dd");
+            viewDate = parsedDate.ToString("yyyy-MM-dd");
         }
     }
     else
     {
         selectedDateStr = DateTime.Today.ToString("yyyy-MM-dd"); // fallback jika tidak ada date
     }
+    var userName = Context.Session.GetString("UserName") ?? "";
+    var profile = Context.Session.GetString("Avatar") ?? "";
+    var fullName = Context.Session.GetString("FullName") ?? "";
+    var role = Context.Session.GetString("Roles") ?? "";
+    string avatar = !string.IsNullOrEmpty(profile) ? profile : $"https://ui-avatars.com/api/?name={userName}&background=random&color=ffffff&size=32";
+    var marginLeftStyle = !string.IsNullOrEmpty(userName) ? "margin-left: 220px;" : "margin-left: 0;";
+    var marginLeftStyleFooter = !string.IsNullOrEmpty(userName) ? "padding-left:220px; background: #fff; z-index:9;" : "background: #fff; z-index:9;";
 }
 <style>
     .list-group-item.active {
@@ -34,12 +43,12 @@
         <div class="nav flex-column">
             @foreach (var entry in entries)
             {
-                <a href="/Note/Detail?id=@Model.Id&date=@entry.Date.ToString("yyyy-MM-dd")"
-                   class="nav-link text-white rounded-2 mb-1 px-3 py-2 list-group-item list-group-item-action @(entry.Date.ToString("yyyy-MM-dd") == selectedDateStr ? "active" : "")"
+                <a href="/Note/Detail?id=@Model.Id&date=@entry.Date"
+                   class="nav-link text-white rounded-2 mb-1 px-3 py-2 list-group-item list-group-item-action @(entry.Date == selectedDateStr ? "active" : "")"
                    style="background-color: #0d1b2a;"
                    onmouseover="this.style.backgroundColor='#1b263b'"
                    onmouseout="this.style.backgroundColor='#0d1b2a'">
-                    <i class="bi bi-calendar-event me-2"></i>@entry.Date.ToString("dd MMM yyyy")
+                    <i class="bi bi-calendar-event me-2"></i>@(string.IsNullOrEmpty( entry.Date)?"":Convert.ToDateTime(entry.Date).ToString("dddd dd MMM yyyy"))
                 </a>
             }
         </div>
@@ -66,6 +75,34 @@
                     <i class="bi bi-gear me-2"></i> Settings
                 </a>
             </li>
+            @if (!string.IsNullOrEmpty(userName))
+            {
+                <!-- Profile / Avatar -->
+                @if (!string.IsNullOrEmpty(userName))
+                {
+                    <li class="nav-item mt-3 pt-3 border-top" style="border-color: #17335a !important;">
+                        <div class="d-flex align-items-center gap-2">
+                            <div class="dropdown ms-0">
+                                <a class="nav-link d-flex align-items-center" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                    <img src="@avatar" class="rounded-circle" width="32" height="32" alt="Avatar" />
+                                    <span class="ms-2 text-white">@fullName</span>
+                                </a>
+                                <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
+                                    <li><a class="dropdown-item" href="#">View Profile</a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li>
+                                        <form asp-controller="Auth" asp-action="Logout" method="post" id="logoutForm" class="dropdown-item m-0 p-0">
+                                            <button type="submit" class="btn btn-link dropdown-item">Logout</button>
+                                        </form>
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+                    </li>
+                }
+
+            }
+
         </ul>
     }
 </aside>

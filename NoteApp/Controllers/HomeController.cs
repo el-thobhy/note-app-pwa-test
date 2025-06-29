@@ -1,5 +1,8 @@
 using System.Diagnostics;
+using ELAuth.Helper;
 using Microsoft.AspNetCore.Mvc;
+using Newtonsoft.Json.Linq;
+using NoteApp.Helper;
 using NoteApp.Models;
 using NoteApp.Services;
 
@@ -16,14 +19,34 @@ namespace NoteApp.Controllers
         // GET: /Home/Index
         public IActionResult Index()
         {
-            List<Note> notes = _noteService.GetAllNotes();
-            return View(notes);
-        }
+            var token = HttpContext.Session.GetString("Token");
+            if (string.IsNullOrEmpty(token))
+            {
+                return RedirectToAction("Index", "Auth");
+            }
+            string[]? roles = JwtHelper.GetRolesFromToken(token);
+            HttpContext.Session.SetString("Roles", string.Join(",", roles ?? new string[] { }));
 
-        // GET: /Home/Create
-        public IActionResult Create()
-        {
-            return View();
+            string? userId = JwtHelper.GetName(token);
+            List<Note> notes = [];
+            List<DailyEntry> entries = [];
+            if (userId == "admin")
+            {
+                notes = _noteService.GetAllNotes();
+                for (int i = 0; i < notes.Count; i++)
+                {
+                    notes[i].Entries = _noteService.GetAllDailyEntriesByNoteId(notes[i].Id);
+                }
+            }
+            else
+            {
+                notes = _noteService.GetAllNotesByUserId(userId);
+                for(int i = 0; i< notes.Count; i++)
+                {
+                    notes[i].Entries = _noteService.GetAllDailyEntriesByNoteId(notes[i].Id);
+                }
+            }
+            return View(notes);
         }
 
         // POST: /Home/Create
@@ -33,7 +56,14 @@ namespace NoteApp.Controllers
         {
             if (ModelState.IsValid)
             {
-                note.Created_by = "admin"; // Bisa ganti dengan user login
+                var token = HttpContext.Session.GetString("Token");
+                if (string.IsNullOrEmpty(token))
+                {
+                    return RedirectToAction("Index", "Auth");
+                }
+                string? userId = JwtHelper.GetName(token);
+                note.Created_by = userId; // Bisa ganti dengan user login
+                note.UserId = userId; // Bisa ganti dengan user login
                 _noteService.CreateNote(note);
                 return RedirectToAction(nameof(Index));
             }
@@ -54,9 +84,11 @@ namespace NoteApp.Controllers
         [ValidateAntiForgeryToken]
         public IActionResult Edit(Note note)
         {
+            var token = HttpContext.Session.GetString("Token");
             if (ModelState.IsValid)
             {
-                note.Modified_by = "admin"; // Ganti sesuai user
+                string? userId = JwtHelper.GetName(token);
+                note.Modified_by = userId; // Ganti sesuai user
                 _noteService.UpdateNote(note);
                 return RedirectToAction(nameof(Index));
             }
@@ -64,6 +96,7 @@ namespace NoteApp.Controllers
         }
 
         // GET: /Home/Delete/5
+        [UserIdAuthorize]
         public IActionResult Delete(int id)
         {
             var note = _noteService.GetNoteById(id);
@@ -72,11 +105,13 @@ namespace NoteApp.Controllers
         }
 
         // POST: /Home/Delete/5
-        [HttpPost, ActionName("Delete")]
-        [ValidateAntiForgeryToken]
+        [HttpPost]
+        [UserIdAuthorize]
         public IActionResult DeleteConfirmed(int id)
         {
-            _noteService.DeleteNote(id, "admin"); // Ganti dengan user login
+            var token = HttpContext.Session.GetString("Token");
+            string? userId = JwtHelper.GetName(token);
+            _noteService.DeleteNote(id, userId); // Ganti dengan user login
             return RedirectToAction(nameof(Index));
         }
     }

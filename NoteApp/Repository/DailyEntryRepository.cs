@@ -20,6 +20,7 @@ namespace NoteApp.Repository
             using var command = CreateCommand("insert");
             command.Parameters.AddWithValue("@Date", entry.Date);
             command.Parameters.AddWithValue("@Content", entry.Content);
+            command.Parameters.AddWithValue("@Title_Note", entry.Title_Note);
             command.Parameters.AddWithValue("@UserId", entry.UserId);
             command.Parameters.AddWithValue("@NoteId", entry.NoteId);
             command.Parameters.AddWithValue("@Created_by", entry.Created_by ?? (object)DBNull.Value);
@@ -58,8 +59,9 @@ namespace NoteApp.Repository
         {
             using var command = CreateCommand("update_entry");
             command.Parameters.AddWithValue("@Id", entry.Id);
-            command.Parameters.AddWithValue("@Date", entry.Date);
+            command.Parameters.AddWithValue("@Date", Convert.ToDateTime(entry.Date));
             command.Parameters.AddWithValue("@Content", entry.Content);
+            command.Parameters.AddWithValue("@Title_Note", entry.Title_Note);
             command.Parameters.AddWithValue("@Modified_by", entry.Modified_by ?? (object)DBNull.Value);
 
             command.ExecuteNonQuery();
@@ -89,8 +91,9 @@ namespace NoteApp.Repository
             return new DailyEntry
             {
                 Id = Convert.ToInt32(reader["Id"]),
-                Date = Convert.ToDateTime(reader["Date"]),
+                Date = reader["Date"] != DBNull.Value ? Convert.ToDateTime(reader["Date"]).ToString("yyyy-MM-dd"): "",
                 Content = reader["Content"]?.ToString(),
+                Title_Note = reader["Title_Note"]?.ToString(),
                 UserId = reader["UserId"]?.ToString(),
                 NoteId = Convert.ToInt32(reader["NoteId"]),
                 Created_by = reader["Created_by"]?.ToString(),

@@ -1,0 +1,202 @@
+﻿@{
+    ViewData["Title"] = "Login";
+}
+
+<div class="container d-flex align-items-center justify-content-center min-vh-70 mt-6">
+    <div class="card shadow-lg" style="width: 900px; border-radius: 10px; overflow: hidden;">
+        <div class="row g-0">
+            <!-- Left Section (Form) -->
+            <div class="col-md-6 p-5">
+                <h4 class="text-primary fw-bold mb-3">El Thobhy Studio</h4>
+                <h2 class="fw-bold text-primary mb-4">
+                    Note Application
+                </h2>
+                <p class="text-muted mb-4">Welcome back! Please login to your account.</p>
+
+                <div class="mb-3 text-purple fw-bold">✿ Email section</div>
+
+                <form id="loginForm">
+                    @Html.AntiForgeryToken()
+                    <div class="mb-3">
+                        <input type="text" class="form-control" placeholder="Username" name="UserName" id="UserName" />
+                        <div class="text-danger small mt-1" id="usernameError" style="display:none;">Username is required.</div>
+                    </div>
+                    <div class="mb-3 position-relative">
+                        <input type="password" name="Password" class="form-control" placeholder="Password" id="passwordInput" />
+                        <span class="position-absolute top-50 end-0 translate-middle-y me-3" style="cursor: pointer;" id="togglePassword">
+                            <i class="bi bi-eye-slash" id="eyeIcon"></i>
+                        </span>
+                        <div class="text-danger small mt-1" id="passwordError" style="display:none;">Password is required.</div>
+                    </div>
+
+
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" id="rememberMe" />
+                            <label class="form-check-label" for="rememberMe">Remember Me</label>
+                        </div>
+                        <a href="#" class="small text-muted">Forgot Password?</a>
+                    </div>
+                    <div class="d-flex mb-3">
+                        <button type="submit" class="btn btn-primary w-50 me-2">Login</button>
+                        <a type="button" asp-area="" asp-controller="SignUp" asp-action="Index" class="btn btn-outline-primary w-50">Sign Up</a>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Right Section (Image + Navigation) -->
+            <div class="col-md-6 bg-light d-flex flex-column align-items-center justify-content-center">
+                <img src="https://cdn-icons-png.flaticon.com/512/3750/3750550.png" alt="Biker" class="img-fluid" style="max-width: 300px;" />
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Loading -->
+<div class="modal" id="loadingModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content p-4" style="height: 200px; display: flex; flex-direction: column; justify-content: center; align-items: center;">
+            <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;"></div>
+            <p class="mt-3 mb-0">Processing...</p>
+        </div>
+    </div>
+</div>
+<!-- Modal Success -->
+<div class="modal fade" id="successModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content p-4">
+            <div class="modal-body text-success fw-bold text-center" id="successMessage">
+                Login berhasil.
+            </div>
+            <div class="modal-footer justify-content-center">
+                <button type="button" class="btn btn-success" data-bs-dismiss="modal">OK</button>
+            </div>
+        </div>
+    </div>
+</div>
+<!--Modal Error-->
+<div class="modal fade" id="errorModal" tabindex="-1" aria-labelledby="errorModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content text-center p-4" style="border-left: 5px solid #dc3545;">
+            <div class="modal-header border-0">
+                <h5 class="modal-title text-danger" id="errorModalLabel">Error</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p id="errorMessage">Something went wrong. Please try again.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+
+<style>
+    .text-purple {
+        color: #8e44ad;
+    }
+
+    .nav-link.active {
+        border-bottom: 2px solid #4e73df;
+    }
+</style>
+@section Scripts {
+
+    <script>
+        function validateLoginForm() {
+            let isValid = true;
+
+            // Ambil nilai input
+            let username = $('#UserName').val();
+            let password = $('#passwordInput').val();
+
+            // Clear previous errors
+            $('#usernameError').hide();
+            $('#passwordError').hide();
+
+            // Validasi username
+            if (!username) {
+                $('#usernameError').show();
+                isValid = false;
+            }
+
+            // Validasi password
+            if (!password) {
+                $('#passwordError').show();
+                isValid = false;
+            }
+
+            return isValid;
+        }
+
+        $(document).ready(function () {
+
+            $('#UserName').on('input', function () {
+                $('#usernameError').hide();
+            });
+
+            // Menghapus peringatan ketika pengguna mulai mengetik di Password
+            $('#passwordInput').on('input', function () {
+                $('#passwordError').hide();
+            });
+
+            $('#loginForm').on('submit', function (e) {
+                e.preventDefault();
+
+                // Panggil fungsi validasi
+                if (!validateLoginForm()) return;  // Hentikan jika validasi gagal
+                let formData = {
+                    UserName: $('#UserName').val(),
+                    Password: $('#passwordInput').val()
+                };
+                var token = $('input[name="__RequestVerificationToken"]').val();
+
+                // Tampilkan modal loading
+                $('#loadingModal').modal('show');
+
+                $.ajax({
+                    type: 'POST',
+                    url: '/Auth/SigningIn',
+                    contentType: 'application/json',
+                    data: JSON.stringify(formData),
+                    headers: {
+                        'RequestVerificationToken': token,
+                    },
+                    success: function (res) {
+                        $('#loadingModal').modal('hide');
+                        if (res.success) {
+                            $('#loadingModal').modal('hide');
+                            $('#successMessage').text(res.message);
+                            $('#successModal').modal('show');
+
+                            setTimeout(function () {
+                                window.location.href = "/Home/Index";
+                            }, 2000);
+                        } else {
+                            $('#loadingModal').modal('hide');
+                            $('#errorMessage').text(res.message);
+                            $('#errorModal').modal('show');
+                        }
+                    },
+                    error: function (e) {
+                        // Sembunyikan modal loading
+                        $('#loadingModal').modal('hide');
+                        $('#errorMessage').text("Something went wrong while connecting to the server.");
+                        $('#errorModal').modal('show');
+                    }
+                });
+            });
+            $('#togglePassword').on('click', function () {
+                const passwordInput = $('#passwordInput');
+                const eyeIcon = $('#eyeIcon');
+
+                const type = passwordInput.attr('type') === 'password' ? 'text' : 'password';
+                passwordInput.attr('type', type);
+
+                eyeIcon.toggleClass('bi-eye');
+                eyeIcon.toggleClass('bi-eye-slash');
+            });
+
+        });
+    </script>
+}

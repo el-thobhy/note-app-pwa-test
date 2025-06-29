@@ -42,6 +42,25 @@ namespace NoteApp.Services
             var repo = new NoteRepository(connection, transaction);
             return repo.GetAll();
         }
+        
+        public List<Note> GetAllNotesByUserId(string userId)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            connection.Open();
+            using var transaction = connection.BeginTransaction();
+
+            var repo = new NoteRepository(connection, transaction);
+            return repo.GetAllByUserId(userId);
+        }
+        public List<DailyEntry> GetAllDailyEntriesByNoteId(string noteId)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            connection.Open();
+            using var transaction = connection.BeginTransaction();
+
+            var repo = new NoteRepository(connection, transaction);
+            return repo.GetEntriesByNoteId(noteId) ?? [];
+        }
 
         public Note? GetNoteById(int id)
         {
@@ -50,7 +69,9 @@ namespace NoteApp.Services
             using var transaction = connection.BeginTransaction();
 
             var repo = new NoteRepository(connection, transaction);
-            return repo.GetById(id);
+            Note? note = repo.GetById(id);
+            note.Entries = repo.GetEntriesByNoteId(id.ToString()) ?? [];
+            return note;
         }
 
         public void UpdateNote(Note note)

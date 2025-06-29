@@ -1,0 +1,174 @@
+﻿@{
+    ViewData["Title"] = "OTP Verification";
+}
+
+<div class="container mt-5">
+    <div class="row justify-content-center align-items-center">
+        <div class="col-md-6">
+            <div class="card border-0 shadow">
+                <div class="card-body p-5">
+                    <h3 class="text-center text-primary mb-4">Verify Your Email</h3>
+                    <p class="text-center text-muted mb-4">Please enter the OTP sent to your email address.</p>
+
+                    <form id="otpForm">
+                        @Html.AntiForgeryToken()
+                        <div class="mb-4">
+                            <input type="text" id="otpInput" class="form-control form-control-lg text-center"
+                                   placeholder="Enter OTP" maxlength="6" style="letter-spacing: 0.5em; font-size: 1.5em;">
+                            <span id="otpError" class="text-danger small d-none"></span>
+                        </div>
+
+                        <div class="d-grid mb-3">
+                            <button type="button" id="submitOtpBtn" class="btn btn-primary btn-lg">Verify OTP</button>
+                        </div>
+
+                        <div class="text-center">
+                            <button type="button" id="resendOtpBtn" class="btn btn-link text-primary p-0" disabled>
+                                Resend OTP (<span id="resendTimer">30</span>s)
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Loading Modal -->
+<div class="modal" id="loadingModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content text-center p-4">
+            <div class="spinner-border text-primary mx-auto" role="status"></div>
+            <p class="mt-3">Processing...</p>
+        </div>
+    </div>
+</div>
+
+<!-- Success Modal -->
+<div class="modal fade" id="successModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content text-center p-4">
+            <div class="text-success mb-3">
+                <i class="bi bi-check-circle" style="font-size: 2rem;"></i>
+            </div>
+            <div class="modal-body">Success</div>
+            <button class="btn btn-success" id="buttonSuccessOk" data-bs-dismiss="modal">OK</button>
+        </div>
+    </div>
+</div>
+
+<!-- Error Modal -->
+<div class="modal fade" id="errorModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content text-center p-4">
+            <div class="text-danger mb-3">
+                <i class="bi bi-x-circle" style="font-size: 2rem;"></i>
+            </div>
+            <div class="modal-body">Error</div>
+            <ul id="errorList" class="text-danger small" style="list-style: none; padding-left: 0;"></ul>
+            <button class="btn btn-danger" data-bs-dismiss="modal">Close</button>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        $(document).ready(function () {
+            let countdown = 30;
+            let intervalId = null;
+
+            function startResendOtpCountdown() {
+                countdown = 30;
+                $('#resendOtpBtn').prop('disabled', true).html(`Resend OTP (<span id="resendTimer">${countdown}</span>s)`);
+                intervalId = setInterval(() => {
+                    countdown--;
+                    $('#resendTimer').text(countdown);
+                    if (countdown <= 0) {
+                        clearInterval(intervalId);
+                        $('#resendOtpBtn').prop('disabled', false).text("Resend OTP");
+                    }
+                }, 1000);
+            }
+
+            startResendOtpCountdown();
+
+            $('#submitOtpBtn').on('click', function () {
+                const otp = $('#otpInput').val().trim();
+                if (!otp) {
+                    $('#otpError').text('OTP is required').removeClass('d-none');
+                    return;
+                }
+                $('#otpError').addClass('d-none');
+                $('#loadingModal').modal('show');
+
+                var formData = {
+                    Otp: otp
+                };
+
+                $.ajax({
+                    url: '/Auth/VerifyOtp',
+                    method: 'POST',
+                    data: JSON.stringify(formData),
+                    contentType: 'application/json',
+                    success: function (response) {
+                        $('#loadingModal').modal('hide');
+                        $("#successModal .modal-body").text("Your email has been successfully verified. You can now sign in to your account.");
+                        $("#buttonSuccessOk").off('click').on("click", function(){
+                            window.location.href = "/Auth/Index";
+                        });
+                        $('#successModal').modal('show');
+                    },
+                    error: function (xhr) {
+                        $('#loadingModal').modal('hide');
+                        let errorMessage = 'OTP verification failed.';
+                        try {
+                            let response = JSON.parse(xhr.responseText);
+                            if (Array.isArray(response) && response.length > 0 && response[0].errorMessage) {
+                                errorMessage = response[0].errorMessage;
+                            }
+                        } catch (e) {
+                            if (xhr.responseText) {
+                                errorMessage = xhr.responseText;
+                            }
+                        }
+                        $('#otpError').text(errorMessage).removeClass('d-none');
+                    }
+                });
+            });
+
+            $('#resendOtpBtn').on('click', function () {
+                resendOtp();
+                startResendOtpCountdown();
+            });
+
+            function resendOtp() {
+                // You may want to pass the email via query string or session
+                // For now, let's assume it's available as a JS variable
+                const email = sessionStorage.getItem('otpEmail');
+                if (!email) {
+                    $('#errorList').append('<li>Email not found for OTP resend.</li>');
+                    $('#errorModal').modal('show');
+                    return;
+                }
+                $('#loadingModal').modal('show');
+                $.ajax({
+                    url: '/Auth/ResendOtp',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(email),
+                    success: function () {
+                        $('#loadingModal').modal('hide');
+                        $('#successModal .modal-body').text("OTP has been resent.");
+                        $('#successModal').modal('show');
+                    },
+                    error: function (xhr) {
+                        $('#loadingModal').modal('hide');
+                        const msg = xhr.responseText || "Error resending OTP.";
+                        $('#errorModal .modal-body').text(msg);
+                        $('#errorModal').modal('show');
+                    }
+                });
+            }
+        });
+    </script>
+}

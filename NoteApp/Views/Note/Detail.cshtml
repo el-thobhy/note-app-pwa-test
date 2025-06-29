@@ -51,12 +51,13 @@
         <form method="post" id="entryForm">
             @Html.AntiForgeryToken()
             <input type="hidden" name="NoteId" value="@Model.Id" />
-            <input type="hidden" name="Date" value="@selectedDate.ToString("yyyy-MM-dd")" />
+            <input type="hidden" name="Date" id="dateNote" value="@selectedDate" />
             @if (entry != null)
             {
                 <input type="hidden" name="Id" value="@entry.Id" />
             }
 
+            <input placeholder="Title" class="form-control mb-2" type="text" name="Title_Note" value="@entry?.Title_Note" />
             <textarea id="ContentEditor" name="Content">@entry?.Content</textarea>
 
             <div class="mt-3">
@@ -74,8 +75,8 @@
             selector: '#ContentEditor',
             menubar: false,
             height: 300,
-            plugins: 'lists link paste',
-            toolbar: 'undo redo | bold italic underline | bullist numlist | link',
+            plugins: 'anchor autolink charmap codesample emoticons image link lists media searchreplace table visualblocks wordcount autosave code fullscreen',
+            toolbar: 'code fullscreen | myPageBreakButton | undo redo | blocks fontsize | bold italic forecolor removeformat | link image table | alignleft aligncenter alignright lineheight | numlist bullist indent outdent ',
             branding: false
         });
 
@@ -99,7 +100,8 @@
                     __RequestVerificationToken: token,
                     Id: $("input[name='Id']").val(),
                     NoteId: $("input[name='NoteId']").val(),
-                    Date: $("input[name='Date']").val(),
+                    Date: $("#dateNote").val(),
+                    Title_Note: $("input[name='Title_Note']").val(),
                     Content: content
                 },
                 success: function () {

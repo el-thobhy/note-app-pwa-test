@@ -1,0 +1,261 @@
+﻿@{
+    ViewData["Title"] = "Sign Up";
+}
+
+<div class="container mt-5">
+    <div class="row justify-content-center align-items-center">
+        <div class="col-10">
+            <div class="card border-0 shadow">
+                <div class="row g-0">
+
+                    <!-- Bagian Kiri -->
+                    <div class="col-md-6 d-none d-md-block bg-primary text-white text-center p-5">
+                        <div class="d-flex flex-column justify-content-center h-100">
+                            <h2 class="mb-4">Welcome to Administrator Support</h2>
+                            <p class="mb-4">Organize your user and make every moment count!</p>
+                            <img src="https://cdn-icons-png.flaticon.com/512/3750/3750550.png" alt="Sign Up Illustration" class="img-fluid" />
+                        </div>
+                    </div>
+
+                    <!-- Bagian Kanan -->
+                    <div class="col-md-6 bg-white p-5">
+                        <h3 class="text-center text-primary mb-4">Create Your Account</h3>
+                        <form id="SignUpForm" asp-action="SignUp" method="post">
+                            @Html.AntiForgeryToken()
+                            <div class="mb-3">
+                                <input name="UserName" class="form-control" placeholder="Username" />
+                                <span class="text-danger" id="error-username"></span>
+                            </div>
+
+                            <div class="mb-3">
+                                <input name="Password" type="password" class="form-control" placeholder="Password" />
+                                <span class="text-danger" id="error-password"></span>
+                            </div>
+
+                            <div class="mb-3">
+                                <input name="ConfirmPassword" type="password" class="form-control" placeholder="Confirm Password" />
+                                <span class="text-danger" id="error-confirm-password"></span>
+                            </div>
+
+                            <div class="mb-3">
+                                <input name="FirstName" class="form-control" placeholder="First Name" />
+                                <span class="text-danger" id="error-firstname"></span>
+                            </div>
+
+                            <div class="mb-3">
+                                <input name="LastName" class="form-control" placeholder="Last Name" />
+                                <span class="text-danger" id="error-lastname"></span>
+                            </div>
+
+                            <div class="mb-3">
+                                <input name="Email" type="email" class="form-control" placeholder="Email" required />
+                                <span class="text-danger" id="error-email"></span>
+                            </div>
+
+                            <div class="d-grid mb-3">
+                                <button type="button" id="openConfirmModalBtn" class="btn btn-primary btn">Sign Up</button>
+
+                            </div>
+
+                            <div class="text-center">
+                                <small>Already have an account? <a asp-action="Index" asp-controller="Auth" class="text-primary">Login</a></small>
+                            </div>
+                        </form>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- Loading -->
+<div class="modal" id="loadingModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content text-center p-4">
+            <div class="spinner-border text-primary mx-auto" role="status"></div>
+            <p class="mt-3">Processing...</p>
+        </div>
+    </div>
+</div>
+
+<!-- Success -->
+<div class="modal fade" id="successModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content text-center p-4">
+            <div class="text-success mb-3">
+                <i class="bi bi-check-circle" style="font-size: 2rem;"></i>
+            </div>
+            <div class="modal-body">Success</div>
+            <button class="btn btn-success" data-bs-dismiss="modal">OK</button>
+        </div>
+    </div>
+</div>
+
+<!-- Error -->
+<div class="modal fade" id="errorModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content text-center p-4">
+            <div class="text-danger mb-3">
+                <i class="bi bi-x-circle" style="font-size: 2rem;"></i>
+            </div>
+            <div class="modal-body">Error</div>
+            <ul id="errorList" class="text-danger small" style="list-style: none; padding-left: 0;"></ul>
+            <button class="btn btn-danger" data-bs-dismiss="modal">Close</button>
+        </div>
+    </div>
+</div>
+<!-- OTP Modal -->
+<div class="modal fade" id="otpModal" tabindex="-1" aria-labelledby="otpModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content p-4 text-center">
+            <h5 class="mb-3 text-primary">Verify OTP</h5>
+            <p>Please enter the OTP sent to your email.</p>
+            <input type="text" id="otpInput" class="form-control mb-3" placeholder="Enter OTP">
+            <span id="otpError" class="text-danger small d-none">Invalid OTP</span>
+            <button id="submitOtpBtn" class="btn btn-primary w-100">Verify</button><div class="text-center mt-3">
+                <button id="resendOtpBtn" class="btn btn-link text-primary p-0" disabled>Kirim ulang OTP (<span id="resendTimer">30</span>s)</button>
+            </div>
+
+        </div>
+    </div>
+</div>
+<!-- Modal Konfirmasi Submit -->
+<div class="modal fade" id="confirmSubmitModal" tabindex="-1" aria-labelledby="confirmSubmitModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content p-4 text-center">
+            <h5 class="mb-3 text-primary">Confirm Registration</h5>
+            <p>Are you sure you want to register with the entered data?</p>
+            <div class="d-flex justify-content-center gap-2">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="confirmSubmitBtn">Yes, Register</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        $(document).ready(function () {
+            function validateSignUpForm() {
+                // Tambahkan semua logika validasi di sini seperti sebelumnya
+                let valid = true;
+
+                $('.text-danger').text('');
+
+                const data = {
+                    userName: $('input[name="UserName"]').val().trim(),
+                    password: $('input[name="Password"]').val(),
+                    confirmPassword: $('input[name="ConfirmPassword"]').val(),
+                    firstName: $('input[name="FirstName"]').val().trim(),
+                    lastName: $('input[name="LastName"]').val().trim(),
+                    email: $('input[name="Email"]').val().trim()
+                };
+
+                if (!data.userName) {
+                    $('#error-username').text('Username is required.');
+                    valid = false;
+                }
+
+                if (!data.password) {
+                    $('#error-password').text('Password is required.');
+                    valid = false;
+                }
+
+                if (!data.confirmPassword) {
+                    $('#error-confirm-password').text('Confirm Password is required.');
+                    valid = false;
+                } else if (data.password !== data.confirmPassword) {
+                    $('#error-confirm-password').text('Passwords do not match.');
+                    valid = false;
+                }
+
+                if (!data.firstName) {
+                    $('#error-firstname').text('First Name is required.');
+                    valid = false;
+                }
+
+                if (!data.lastName) {
+                    $('#error-lastname').text('Last Name is required.');
+                    valid = false;
+                }
+
+                return valid;
+            }
+
+            $('#openConfirmModalBtn').on('click', function () {
+                // Validasi dulu sebelum tampilkan konfirmasi
+                const isValid = validateSignUpForm();
+                if (isValid) {
+                    $('#confirmSubmitModal').modal('show');
+                }
+            });
+
+
+            $('#confirmSubmitBtn').on('click', function () {
+                $('#confirmSubmitModal').modal('hide');
+                submitSignUpForm(); // Lanjut ke proses AJAX submit
+            });
+
+            function submitSignUpForm() {
+
+                $('#loadingModal').modal('show');
+                const data = {
+                    userName: $('input[name="UserName"]').val().trim(),
+                    password: $('input[name="Password"]').val(),
+                    confirmPassword: $('input[name="ConfirmPassword"]').val(),
+                    firstName: $('input[name="FirstName"]').val().trim(),
+                    lastName: $('input[name="LastName"]').val().trim(),
+                    email: $('input[name="Email"]').val().trim()
+                };
+
+                var token = $('input[name="__RequestVerificationToken"]').val();
+                $.ajax({
+                    url: '/Auth/RegisterAccount',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(data),
+                    headers: {
+                        'RequestVerificationToken': token,
+                    },
+                    beforeSend: function () {
+                        $('#loadingModal').modal('show');
+                    },
+                    success: function (response) {
+                        $('#loadingModal').modal('hide');
+                        // Store email in sessionStorage for OTP resend functionality
+                        sessionStorage.setItem('otpEmail', data.email);
+                        // Redirect to OTP verification page
+                        window.location.href = '/SignUp/OtpVerification';
+                    },
+                    error: function (xhr) {
+                        $('#loadingModal').modal('hide');
+
+                        var errorList = $('#errorList');
+                        errorList.empty(); // kosongkan isi sebelumnya
+
+                        try {
+                            const response = JSON.parse(xhr.responseText);
+                            if (Array.isArray(response)) {
+                                response.forEach(err => {
+                                    errorList.append(`<li>${err.errorMessage}</li>`);
+                                });
+                            } else if (response.message) {
+                                errorList.append(`<li>${response.message}</li>`);
+                            } else {
+                                errorList.append(`<li>Something went wrong. Please try again.</li>`);
+                            }
+                        } catch (e) {
+                            errorList.append(`<li>Unexpected error format.</li>`);
+                        }
+
+                        $('#errorModal').modal('show');
+                    }
+                });
+
+            }
+
+        });
+    </script>
+}
+
+

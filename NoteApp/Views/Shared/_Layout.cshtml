@@ -1,4 +1,9 @@
-﻿<!DOCTYPE html>
+﻿@{
+
+    var userName = Context.Session.GetString("UserName") ?? "";
+}
+
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8" />
@@ -12,33 +17,41 @@
 
     <style>
         html, body {
-            height: 100%;
-            margin: 0;
-            padding: 0;
+        height: 100%;
+        margin: 0;
+        padding: 0;
         }
 
         body {
-            font-family: "Segoe UI", sans-serif;
-            background-color: #f8f9fa;
+        font-family: "Segoe UI", sans-serif;
+        background-color: #f8f9fa;
         }
 
         .main-wrapper {
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
         }
 
         .content-wrapper {
-            flex: 1;
-            display: flex;
+        flex: 1;
+        display: flex;
         }
 
         .offcanvas .offcanvas-body {
-            padding: 0;
+        padding: 0;
         }
 
         footer {
-            font-size: 0.9rem;
+        font-size: 0.9rem;
+        }
+
+        .sidebar-scrollable{
+			height: 100vh;
+            overflow-y: auto;
+            overflow-x: hidden;
+            position: sticky;
+            background: #0d1b2a;
         }
     </style>
 </head>
@@ -56,21 +69,26 @@
 
     <div class="main-wrapper">
         <div class="content-wrapper">
-            <!-- Sidebar (desktop) -->
-            <div class="d-none d-lg-block bg-white border-end shadow-sm" style="width: 250px;">
-                <partial name="_Sidebar" />
-            </div>
+            @if (!string.IsNullOrEmpty(userName))
+            {    
+                <!-- Sidebar (desktop) -->
+                <div class="d-none d-lg-block bg-white border-end shadow-sm sidebar-scrollable" style="width: 250px; background: #0d1b2a;">
+                    <div style="width: 250px; background: #0d1b2a;">
+                        <partial name="_Sidebar" />
+                    </div>
+                </div>
 
-            <!-- Offcanvas Sidebar (mobile) -->
-            <div class="offcanvas offcanvas-start d-lg-none" tabindex="-1" id="sidebarOffcanvas" aria-labelledby="sidebarOffcanvasLabel">
-                <div class="offcanvas-header border-bottom">
-                    <h5 class="offcanvas-title" id="sidebarOffcanvasLabel">Menu</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+                <!-- Offcanvas Sidebar (mobile) -->
+                <div class="offcanvas offcanvas-start d-lg-none" tabindex="-1" id="sidebarOffcanvas" aria-labelledby="sidebarOffcanvasLabel">
+                    <div class="offcanvas-header border-bottom">
+                        <h5 class="offcanvas-title" id="sidebarOffcanvasLabel">Menu</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+                    </div>
+                    <div class="offcanvas-body p-0">
+                        <partial name="_Sidebar" />
+                    </div>
                 </div>
-                <div class="offcanvas-body p-0">
-                    <partial name="_Sidebar" />
-                </div>
-            </div>
+            }
 
             <!-- Main Content -->
             <main class="flex-grow-1 p-4">
@@ -79,11 +97,11 @@
         </div>
 
         <!-- Footer -->
-        <footer class="border-top text-muted bg-white text-center py-2 shadow-sm">
+        @* <footer class="border-top text-muted bg-white text-center py-2 shadow-sm"> *@
          @*    <div class="container">
                 &copy; 2025 - <strong>NoteApp</strong> &middot; <a asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
             </div> *@
-        </footer>
+        @* </footer> *@
     </div>
 
     <!-- Scripts -->
