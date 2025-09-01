@@ -10,7 +10,7 @@
     <PackageReference Include="Microsoft.AspNet.Mvc" Version="5.3.0" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.0.2" />
   </ItemGroup>
-
+	
   <ItemGroup>
     <Reference Include="ELAuth">
       <HintPath>Lib\ELAuth.dll</HintPath>

@@ -60,30 +60,17 @@ body {
 
 /* Sidebar styling */
 .sidebar {
-    background-color: var(--sidebar-bg);
+    background-color: #0d1b2a;
     color: white;
-    min-height: 100vh;
     padding: 1rem;
-    width: 250px;
+    width: 290px;
+    height: 100vh;
+    position: fixed;
+    top: 0;
+    left: 0;
 }
 
-    .sidebar .nav-link {
-        color: #ffffff;
-        padding: 0.5rem 1rem;
-        border-radius: 0.5rem;
-        transition: background-color 0.2s ease;
-    }
-
-        .sidebar .nav-link:hover {
-            background-color: var(--sidebar-hover);
-            color: #ffffff;
-        }
-
-        .sidebar .nav-link.active {
-            background-color: var(--bs-primary);
-            color: white;
-        }
-
+    
 /* Footer */
 footer {
     font-size: 0.9rem;

@@ -21,6 +21,11 @@ namespace NoteApp.Repository
             command.Parameters.AddWithValue("@Date", entry.Date);
             command.Parameters.AddWithValue("@Content", entry.Content);
             command.Parameters.AddWithValue("@Title_Note", entry.Title_Note);
+            command.Parameters.AddWithValue("@WH_start", entry.WH_start);
+            command.Parameters.AddWithValue("@WH_end", entry.WH_end);
+            command.Parameters.AddWithValue("@OT_start", entry.OT_start);
+            command.Parameters.AddWithValue("@OT_end", entry.OT_end);
+            command.Parameters.AddWithValue("@Status_absen", entry.Status_absen);
             command.Parameters.AddWithValue("@UserId", entry.UserId);
             command.Parameters.AddWithValue("@NoteId", entry.NoteId);
             command.Parameters.AddWithValue("@Created_by", entry.Created_by ?? (object)DBNull.Value);
@@ -62,6 +67,11 @@ namespace NoteApp.Repository
             command.Parameters.AddWithValue("@Date", Convert.ToDateTime(entry.Date));
             command.Parameters.AddWithValue("@Content", entry.Content);
             command.Parameters.AddWithValue("@Title_Note", entry.Title_Note);
+            command.Parameters.AddWithValue("@WH_start", entry.WH_start);
+            command.Parameters.AddWithValue("@WH_end", entry.WH_end);
+            command.Parameters.AddWithValue("@OT_start", entry.OT_start);
+            command.Parameters.AddWithValue("@OT_end", entry.OT_end);
+            command.Parameters.AddWithValue("@Status_absen", entry.Status_absen);
             command.Parameters.AddWithValue("@Modified_by", entry.Modified_by ?? (object)DBNull.Value);
 
             command.ExecuteNonQuery();
@@ -94,6 +104,11 @@ namespace NoteApp.Repository
                 Date = reader["Date"] != DBNull.Value ? Convert.ToDateTime(reader["Date"]).ToString("yyyy-MM-dd"): "",
                 Content = reader["Content"]?.ToString(),
                 Title_Note = reader["Title_Note"]?.ToString(),
+                WH_start = reader["WH_start"]?.ToString(),
+                WH_end = reader["WH_end"]?.ToString(),
+                OT_end = reader["OT_end"]?.ToString(),
+                OT_start = reader["OT_start"]?.ToString(),
+                Status_absen = reader["Status_absen"]?.ToString(),
                 UserId = reader["UserId"]?.ToString(),
                 NoteId = Convert.ToInt32(reader["NoteId"]),
                 Created_by = reader["Created_by"]?.ToString(),
