@@ -43,31 +43,42 @@
                 <input placeholder="Title" class="form-control bold ms-2 mb-2 col-10" type="text" name="Title_Note" value="@entry?.Title_Note" />
                 <p class="badge bg-label-dark col-2 ms-2"><i class="bi bi-calendar-event me-1"></i> @selectedDate.ToString("dd MMMM yyyy")</p>
             </div>
-            <div class="d-flex pe-3 px-2 input-group mb-2">
+            <div class="row g-2 mb-2">
                 <!-- Status Radio Button -->
-                <div class="d-flex align-items-start col-4 me-2 p-2">
-                    <div class="form-check me-2">
-                        <input class="form-check-input" type="radio" name="Status_absen" id="statusMasuk" value="1" @(entry?.Status_absen == "1" ? "checked" : "") />
-                        <label class="form-check-label" for="statusMasuk">Masuk</label>
-                    </div>
-                    <div class="form-check me-2">
-                        <input class="form-check-input" type="radio" name="Status_absen" id="statusCuti" value="2" @(entry?.Status_absen == "2" ? "checked" : "") />
-                        <label class="form-check-label" for="statusCuti">Cuti</label>
-                    </div>
-                    <div class="form-check me-2">
-                        <input class="form-check-input" type="radio" name="Status_absen" id="statusLibur" value="3" @(entry?.Status_absen == "3" ? "checked" : "") />
-                        <label class="form-check-label" for="statusLibur">Libur</label>
-                    </div>
-                    <div class="form-check">
-                        <input class="form-check-input" type="radio" name="Status_absen" id="statusOthers" value="4" @(entry?.Status_absen == "4" ? "checked" : "") />
-                        <label class="form-check-label" for="statusOthers">Others</label>
+                <div class="col-12 col-md-4">
+                    <div class="d-flex flex-wrap p-2 border rounded">
+                        <div class="form-check me-2">
+                            <input class="form-check-input" type="radio" name="Status_absen" id="statusMasuk" value="1" @(entry?.Status_absen == "1" ? "checked" : "") />
+                            <label class="form-check-label" for="statusMasuk">Masuk</label>
+                        </div>
+                        <div class="form-check me-2">
+                            <input class="form-check-input" type="radio" name="Status_absen" id="statusCuti" value="2" @(entry?.Status_absen == "2" ? "checked" : "") />
+                            <label class="form-check-label" for="statusCuti">Cuti</label>
+                        </div>
+                        <div class="form-check me-2">
+                            <input class="form-check-input" type="radio" name="Status_absen" id="statusLibur" value="3" @(entry?.Status_absen == "3" ? "checked" : "") />
+                            <label class="form-check-label" for="statusLibur">Libur</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="Status_absen" id="statusOthers" value="4" @(entry?.Status_absen == "4" ? "checked" : "") />
+                            <label class="form-check-label" for="statusOthers">Lainnya</label>
+                        </div>
                     </div>
                 </div>
-                <input placeholder="Start Time" class="col-2 time-picker form-control mb-2" type="time" name="WH_start" value="@entry?.WH_start" />
-                <input placeholder="End Time" class="col-2 time-picker form-control mb-2" type="time" name="WH_end" value="@entry?.WH_end" />
-                <input placeholder="Overtime Start" class="col-2 time-picker form-control mb-2" type="time" name="OT_start" value="@entry?.OT_start" />
-                <input placeholder="Overtime End" class="col-2 time-picker form-control mb-2" type="time" name="OT_end" value="@entry?.OT_end" />
 
+                <!-- Input Time -->
+                <div class="col-6 col-md-2">
+                    <input placeholder="Start Time" class="form-control time-picker" type="time" name="WH_start" value="@entry?.WH_start" />
+                </div>
+                <div class="col-6 col-md-2">
+                    <input placeholder="End Time" class="form-control time-picker" type="time" name="WH_end" value="@entry?.WH_end" />
+                </div>
+                <div class="col-6 col-md-2">
+                    <input placeholder="Overtime Start" class="form-control time-picker" type="time" name="OT_start" value="@entry?.OT_start" />
+                </div>
+                <div class="col-6 col-md-2">
+                    <input placeholder="Overtime End" class="form-control time-picker" type="time" name="OT_end" value="@entry?.OT_end" />
+                </div>
             </div>
 
         </div>
@@ -138,6 +149,9 @@ else
                     text: 'Save Page',
                     icon: 'save',
                     onAction: function () {
+
+                        e.preventDefault();
+
                         const $btn = $("#submitBtn");
                         const originalHtml = $btn.html();
                         $btn.prop("disabled", true).html(`<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Menyimpan...`);

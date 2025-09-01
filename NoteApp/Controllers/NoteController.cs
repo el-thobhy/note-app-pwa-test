@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using NoteApp.Helper;
 using NoteApp.Models;
 using NoteApp.Services;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace NoteApp.Controllers
 {
@@ -55,6 +56,35 @@ namespace NoteApp.Controllers
             string? userId = JwtHelper.GetName(token);
             entry.Modified_by = userId;
             _entryService.UpdateEntry(entry);
+            return Ok();
+        }
+
+        // GET: /Note/Edit/5
+        [HttpGet]
+        public IActionResult EditDate(int id)
+        {
+            var entries = _entryService.GetEntryById(id);
+            
+            if (entries == null) return NotFound();
+            return PartialView(entries);
+        }
+
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public IActionResult UpdateDate(int id, string date)
+        {
+            var token = HttpContext.Session.GetString("Token");
+            string? userId = JwtHelper.GetName(token);
+            _entryService.UpdateDate(id, date, userId);
+            return Ok();
+        }
+
+        [HttpPost]
+        public IActionResult DeleteEntry(int id)
+        {
+            var token = HttpContext.Session.GetString("Token");
+            string? userId = JwtHelper.GetName(token);
+            _entryService.DeleteEntry(id, userId);
             return Ok();
         }
     }

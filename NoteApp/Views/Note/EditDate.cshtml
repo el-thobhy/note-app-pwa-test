@@ -1,29 +1,31 @@
-﻿@model NoteApp.Models.Note
+﻿@model NoteApp.Models.DailyEntry
+@{
+}
 
-<form id="editNoteForm">
+<form id="editNoteFormEntries">
     @Html.AntiForgeryToken()
     <div class="modal-header">
-        <h5 class="modal-title">Edit Note</h5>
+        <h5 class="modal-title">Edit Date</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
     </div>
     <div class="modal-body">
-        <input type="hidden" name="Id" value="@Model.Id" />
+        <input type="hidden" name="id" value="@Model.Id" />
         <input type="hidden" name="UserId" value="@Model.UserId" />
         <div class="mb-3">
-            <label for="Title" class="form-label">Judul</label>
-            <input type="text" name="Title" value="@Model.Title" class="form-control" required />
+            <label for="Title" class="form-label">Entries</label>
+            <input type="date" name="date" value="@Model.Date" class="form-control" required />
         </div>
     </div>
     <div class="modal-footer">
-        <button type="submit" class="btn btn-primary" id="saveBtn">Simpan Perubahan</button>
+        <button type="submit" class="btn btn-primary" id="saveBtnEntries">Simpan Perubahan</button>
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
     </div>
 </form>
 
 <script>
     // Jalankan saat form submit
-    $("#editNoteForm").submit(function (e) { 
-        const $btn = $("#saveBtn");
+    $("#editNoteFormEntries").submit(function (e) {
+        const $btn = $("#saveBtnEntries");
         const originalHtml = $btn.html();
         $btn.prop("disabled", true).html(`<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Menyimpan...`);
 
@@ -32,7 +34,7 @@
         e.preventDefault();
         $.ajax({
             type: "POST",
-            url: "/Home/Edit",
+            url: "/Note/UpdateDate",
             data: $(this).serialize(),
             headers: {
                 'RequestVerificationToken': token // Harus ada untuk request POST

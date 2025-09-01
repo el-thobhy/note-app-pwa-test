@@ -56,7 +56,7 @@
 <div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <form id="deleteNoteForm" class="modal-content border-0 rounded-4 shadow-sm">
-            <div class="modal-header border-0 pb-0 rounded-top-4">
+            <div class="modal-header text-white border-0 pb-0 rounded-top-4">
                 <h5 class="modal-title fw-semibold">
                     <i class="bi bi-trash-fill me-2"></i>Hapus Note
                 </h5>
@@ -90,18 +90,18 @@
 </div>
 
 <!-- DELETE Modal -->
-<div class="modal fade" id="deleteModalEntries" tabindex="-1" aria-labelledby="deleteModalEntriesLabel" aria-hidden="true">
+<div class="modal fade" id="deleteModalEntries" tabindex="-1" aria-labelledby="deleteModalLabelEntries" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <form id="deleteNoteFormEntries" class="modal-content border-0 rounded-4 shadow-sm">
-            <div class="modal-header border-0 pb-0 rounded-top-4">
+            <div class="modal-header text-white border-0 pb-0 rounded-top-4">
                 <h5 class="modal-title fw-semibold">
-                    <i class="bi bi-trash-fill me-2"></i>Hapus Entries
+                    <i class="bi bi-trash-fill me-2"></i>Hapus Note
                 </h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Tutup"></button>
             </div>
 
             <div class="modal-body">
-                <p>Yakin ingin menghapus Entries <strong id="deleteNoteTitleEntries" class="text-danger"></strong>?</p>
+                <p>Yakin ingin menghapus note <strong id="deleteNoteTitleEntries" class="text-danger"></strong>?</p>
                 <input type="hidden" id="deleteNoteIdEntries" name="id" />
             </div>
 

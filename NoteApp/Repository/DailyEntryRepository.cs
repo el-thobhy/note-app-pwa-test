@@ -77,6 +77,16 @@ namespace NoteApp.Repository
             command.ExecuteNonQuery();
         }
 
+        public void UpdateDate(int id,string date, string modified_by)
+        {
+            using var command = CreateCommand("update_date");
+            command.Parameters.AddWithValue("@Id", id);
+            command.Parameters.AddWithValue("@Date", Convert.ToDateTime(date));
+            command.Parameters.AddWithValue("@Modified_by", modified_by ?? (object)DBNull.Value);
+
+            command.ExecuteNonQuery();
+        }
+
         public void Delete(int id, string? deletedBy)
         {
             using var command = CreateCommand("delete");
