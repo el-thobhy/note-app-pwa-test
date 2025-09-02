@@ -4,7 +4,6 @@
 }
 
 <div class="d-flex justify-content-between align-items-center mb-2">
-    <h2 class="fw-semibold">Semua Note</h2>
     <button class="btn btn-primary rounded-pill shadow-sm" data-bs-toggle="modal" data-bs-target="#createModal">
         <i class="bi bi-plus-circle me-1"></i> Tambah Note
     </button>
@@ -58,7 +57,7 @@
         </div>
     }
 </div>
-<div class="row note-table">
+<div class="row note-table d-none d-lg-block">
     <div class="col-12">
         <div class="card p-3">
             <table class="card-datatable table table-condensed" id="tableTimesheet">
@@ -147,34 +146,64 @@
             });
         });
 
-        $(document).ready(function(){
+        $(document).ready(function () {
             var table = $("#tableTimesheet").DataTable({
-                // Konfigurasi dasar
-                "paging": true,           // Aktifkan pagination
-                "scrollX": true,
-                "lengthChange": true,    // Nonaktifkan opsi untuk mengubah jumlah baris per halaman
-                "searching": true,        // Aktifkan fitur pencarian
-                "ordering": true,         // Aktifkan fitur pengurutan kolom
-                "info": true,             // Tampilkan informasi tabel
-                "autoWidth": false,       // Nonaktifkan pengaturan otomatis lebar kolom
-                "responsive": false,
-
-                // Customisasi kolom tertentu
-                "columnDefs": [
-                    { "orderable": false, "targets": [5] }, // Nonaktifkan pengurutan pada kolom 'Action'
-                    { "className": "text-center", "targets": "_all" }, // Set text-center pada semua kolom
+                paging: true,
+                scrollX: true,
+                lengthChange: true,
+                searching: true,
+                ordering: true,
+                info: true,
+                autoWidth: false,
+                responsive: false,
+                order: [[0, "desc"]],
+                columnDefs: [
+                    { orderable: false, targets: [5] },
+                    { className: "text-center", targets: "_all" },
                 ],
 
-                // Set opsi untuk language (Opsional)
-                "language": {
-                    "lengthMenu": "Show _MENU_ entries",
-                    "zeroRecords": "Data is Empty",
-                    "info": "Show _PAGE_ from _PAGES_ pages",
-                    "infoEmpty": "Data Not Available",
-                    "infoFiltered": "(filter from _MAX_ total data)"
-                }
+                language: {
+                    lengthMenu: "Show _MENU_ entries",
+                    zeroRecords: "Data is Empty",
+                    info: "Show _PAGE_ from _PAGES_ pages",
+                    infoEmpty: "Data Not Available",
+                    infoFiltered: "(filter from _MAX_ total data)"
+                },
+
+                processing: true,
+                serverSide: false,   // 🔥 ubah ke false kalau backend belum support server-side
+
+                ajax: {
+                    url: '/Home/GetAllEntries',
+                    type: 'GET',
+                    dataSrc: function (json) {
+                        console.log("Raw JSON:", json);  // 👉 debug di console
+                        return json.data;                // ambil array "data"
+                    }
+                },
+
+                columns: [
+                    { data: 'date' },
+                    { data: 'wH_start' },
+                    { data: 'wH_end' },
+                    { data: 'oT_start' },
+                    { data: 'oT_end' },
+                    { data: 'total_WH' },
+                    { data: 'total_OT' },
+                    { 
+                        data: 'status_absen',
+                        render: function(data){
+                            var status = data === "1" ? "Masuk" : 
+                                data === "2" ? "Cuti" :
+                                data === "3" ? "Libur" :
+                                data === "4" ? "Lainnya" : "";
+                            return status;
+                        }
+                    },
+                    { data: 'title_Note' }
+                ]
             });
-            
         });
+
     </script>
 }

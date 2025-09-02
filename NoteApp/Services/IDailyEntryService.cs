@@ -11,6 +11,7 @@ namespace NoteApp.Services
         void DeleteEntry(int id, string? deletedBy);
         DailyEntry? GetEntryById(int id);
         List<DailyEntry> GetEntriesByNoteId(int noteId);
+        List<DailyEntry> GetEntriesAll();
     }
 
 }

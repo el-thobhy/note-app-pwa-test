@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using ELAuth.Helper;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json.Linq;
@@ -11,10 +10,12 @@ namespace NoteApp.Controllers
     public class HomeController : Controller
     {
         private readonly INoteService _noteService;
+        private readonly IDailyEntryService _noteEntriesService;
 
-        public HomeController(INoteService noteService)
+        public HomeController(INoteService noteService, IDailyEntryService noteEntriesService)
         {
             _noteService = noteService;
+            _noteEntriesService = noteEntriesService;
         }
         // GET: /Home/Index
         public IActionResult Index()
@@ -47,6 +48,20 @@ namespace NoteApp.Controllers
                 }
             }
             return View(notes);
+        }
+
+
+        public JsonResult GetAllEntries()
+        {
+            try
+            {
+                List<DailyEntry> entries = _noteEntriesService.GetEntriesAll();
+                return Json(new { data = entries });
+            }
+            catch (Exception)
+            {
+                return Json(new { data = new List<DailyEntry>() });
+            }
         }
 
         // POST: /Home/Create

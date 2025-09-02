@@ -110,5 +110,15 @@ namespace NoteApp.Services
             var repo = new DailyEntryRepository(connection, transaction);
             return repo.GetByNoteId(noteId);
         }
+
+        public List<DailyEntry> GetEntriesAll()
+        {
+            using var connection = new SqlConnection(_connectionString);
+            connection.Open();
+            using var transaction = connection.BeginTransaction();
+
+            var repo = new DailyEntryRepository(connection, transaction);
+            return repo.GetAllNote();
+        }
     }
 }

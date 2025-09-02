@@ -47,6 +47,19 @@ namespace NoteApp.Repository
             return entries;
         }
 
+        public List<DailyEntry> GetAllNote()
+        {
+            using var command = CreateCommand("get_all_entry");
+
+            using var reader = command.ExecuteReader();
+            List<DailyEntry> entries = new List<DailyEntry>();
+            while (reader.Read())
+            {
+                entries.Add(MapEntry(reader,true));
+            }
+            return entries;
+        }
+
         public DailyEntry? GetById(int id)
         {
             using var command = CreateCommand("get_by_entry_id");
@@ -106,7 +119,7 @@ namespace NoteApp.Repository
             return cmd;
         }
 
-        private DailyEntry MapEntry(SqlDataReader reader)
+        private DailyEntry MapEntry(SqlDataReader reader, bool isTable = false)
         {
             return new DailyEntry
             {
@@ -116,6 +129,8 @@ namespace NoteApp.Repository
                 Title_Note = reader["Title_Note"]?.ToString(),
                 WH_start = reader["WH_start"]?.ToString(),
                 WH_end = reader["WH_end"]?.ToString(),
+                Total_WH = isTable ? reader["Total_WH"]?.ToString(): "",
+                Total_OT = isTable ? reader["Total_OT"]?.ToString(): "",
                 OT_end = reader["OT_end"]?.ToString(),
                 OT_start = reader["OT_start"]?.ToString(),
                 Status_absen = reader["Status_absen"]?.ToString(),
