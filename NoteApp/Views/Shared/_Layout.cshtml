@@ -35,6 +35,10 @@
       data-assets-path="../../frest/assets/"
       data-template="vertical-menu-template">
 <head>
+    <!--For PWA-->
+    <link rel="manifest" href="../../manifest.json" />
+    <meta name="theme-color" content="#0d6efd" />
+
     <meta charset="utf-8" />
     <meta name="viewport"
           content="width=device-width, initial-scale=1.0, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0" />
@@ -376,6 +380,12 @@
             });
         });
 
+        //For PWA
+        if('serviceWorker' in navigator){
+            navigator.serviceWorker.register('../../sw.js')
+                .then(reg => console.log("Service Worker registerd", reg))
+                .catch(err => console.log("Service Worker failed", err));
+        }
 
     </script>
     @await RenderSectionAsync("Scripts", required: false)
