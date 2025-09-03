@@ -13,6 +13,11 @@ namespace NoteApp.Controllers
         }
         public IActionResult Index()
         {
+            var token = HttpContext.Session.GetString("Token");
+            if (!string.IsNullOrEmpty(token))
+            {
+                return RedirectToAction("Index", "Home");
+            }
             return View();
         }
         [HttpPost]
