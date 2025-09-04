@@ -1,4 +1,5 @@
 using NoteApp.Services;
+using NoteAppPWA.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,6 +15,9 @@ builder.Services.AddSession(options =>
 builder.Services.AddControllersWithViews();
 builder.Services.AddSingleton<INoteService, NoteService>();
 builder.Services.AddSingleton<IDailyEntryService, DailyEntryService>();
+builder.Services.AddSingleton<ISettingServices, SettingServices>();
+builder.Services.AddHttpClient();
+builder.Services.AddHttpContextAccessor();
 
 var app = builder.Build();
 

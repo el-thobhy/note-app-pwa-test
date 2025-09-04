@@ -52,7 +52,7 @@ self.addEventListener("fetch", event => {
 
         event.respondWith(
             fetch(newRequest)
-                .then(response => {
+                .then(response => { 
                     // kalau server redirect ke login, biarkan browser yang tangani
                     if (response && response.type === "opaqueredirect") {
                         return response;

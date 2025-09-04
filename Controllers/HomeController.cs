@@ -4,10 +4,11 @@ using Newtonsoft.Json.Linq;
 using NoteApp.Helper;
 using NoteApp.Models;
 using NoteApp.Services;
+using NoteAppPWA.Controllers;
 
 namespace NoteApp.Controllers
 {
-    public class HomeController : Controller
+    public class HomeController : BaseController
     {
         private readonly INoteService _noteService;
         private readonly IDailyEntryService _noteEntriesService;
@@ -20,18 +21,9 @@ namespace NoteApp.Controllers
         // GET: /Home/Index
         public IActionResult Index()
         {
-            var token = HttpContext.Session.GetString("Token");
-            if (string.IsNullOrEmpty(token))
-            {
-                return RedirectToAction("Index", "Auth");
-            }
-            string[]? roles = JwtHelper.GetRolesFromToken(token);
-            HttpContext.Session.SetString("Roles", string.Join(",", roles ?? new string[] { }));
-
-            string? userId = JwtHelper.GetName(token);
             List<Note> notes = [];
             List<DailyEntry> entries = [];
-            if (userId == "admin")
+            if (UserId == "admin")
             {
                 notes = _noteService.GetAllNotes();
                 for (int i = 0; i < notes.Count; i++)
@@ -41,7 +33,7 @@ namespace NoteApp.Controllers
             }
             else
             {
-                notes = _noteService.GetAllNotesByUserId(userId);
+                notes = _noteService.GetAllNotesByUserId(UserId);
                 for(int i = 0; i< notes.Count; i++)
                 {
                     notes[i].Entries = _noteService.GetAllDailyEntriesByNoteId(notes[i].Id);
@@ -55,7 +47,7 @@ namespace NoteApp.Controllers
         {
             try
             {
-                List<DailyEntry> entries = _noteEntriesService.GetEntriesAll();
+                List<DailyEntry> entries = _noteEntriesService.GetEntriesAll(UserId);
                 return Json(new { data = entries });
             }
             catch (Exception)
@@ -71,14 +63,8 @@ namespace NoteApp.Controllers
         {
             if (ModelState.IsValid)
             {
-                var token = HttpContext.Session.GetString("Token");
-                if (string.IsNullOrEmpty(token))
-                {
-                    return RedirectToAction("Index", "Auth");
-                }
-                string? userId = JwtHelper.GetName(token);
-                note.Created_by = userId; // Bisa ganti dengan user login
-                note.UserId = userId; // Bisa ganti dengan user login
+                note.Created_by = UserId; // Bisa ganti dengan user login
+                note.UserId = UserId; // Bisa ganti dengan user login
                 _noteService.CreateNote(note);
                 return RedirectToAction(nameof(Index));
             }
@@ -99,10 +85,9 @@ namespace NoteApp.Controllers
         [ValidateAntiForgeryToken]
         public IActionResult Edit(Note note)
         {
-            var token = HttpContext.Session.GetString("Token");
             if (ModelState.IsValid)
             {
-                string? userId = JwtHelper.GetName(token);
+                string? userId = JwtHelper.GetName(Token);
                 note.Modified_by = userId; // Ganti sesuai user
                 _noteService.UpdateNote(note);
                 return RedirectToAction(nameof(Index));
@@ -124,8 +109,7 @@ namespace NoteApp.Controllers
         [UserIdAuthorize]
         public IActionResult DeleteConfirmed(int id)
         {
-            var token = HttpContext.Session.GetString("Token");
-            string? userId = JwtHelper.GetName(token);
+            string? userId = JwtHelper.GetName(Token);
             _noteService.DeleteNote(id, userId); // Ganti dengan user login
             return RedirectToAction(nameof(Index));
         }

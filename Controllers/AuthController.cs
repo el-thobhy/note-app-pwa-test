@@ -13,11 +13,6 @@ namespace NoteApp.Controllers
         }
         public IActionResult Index()
         {
-            var token = HttpContext.Session.GetString("Token");
-            if (!string.IsNullOrEmpty(token))
-            {
-                return RedirectToAction("Index", "Home");
-            }
             return View();
         }
         [HttpPost]
@@ -44,6 +39,10 @@ namespace NoteApp.Controllers
                 HttpContext.Session.SetString("UserName", response.Data.UserName ?? "");
                 HttpContext.Session.SetString("Avatar", response.Data.ProfilePhoto ?? "");
                 HttpContext.Session.SetString("FullName", (response.Data.FirstName + " " + response.Data.LastName) ?? "");
+                HttpContext.Session.SetString("FirstName", response.Data.FirstName ?? "");
+                HttpContext.Session.SetString("LastName", response.Data.LastName ?? "");
+                HttpContext.Session.SetString("Email", response.Data.Email ?? "");
+                HttpContext.Session.SetString("ID", response.Data.Id.ToString() ?? "");
 
 
 

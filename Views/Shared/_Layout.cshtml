@@ -230,7 +230,7 @@
                                         </a>
                                         <ul class="dropdown-menu dropdown-menu-end">
                                             <li>
-                                                <a class="dropdown-item" href="pages-account-settings-account.html">
+                                                <a class="dropdown-item" href="@Url.Action("Index","Profile")">
                                                     <div class="d-flex">
                                                         <div class="flex-shrink-0 me-3">
                                                             <div class="avatar avatar-online">
@@ -238,8 +238,8 @@
                                                             </div>
                                                         </div>
                                                         <div class="flex-grow-1">
-                                                            <span class="fw-semibold d-block lh-1">John Doe</span>
-                                                            <small>Admin</small>
+                                                            <span class="fw-semibold d-block lh-1">@fullName</span>
+                                                            <small>@userName</small>
                                                         </div>
                                                     </div>
                                                 </a>
@@ -248,15 +248,9 @@
                                                 <div class="dropdown-divider"></div>
                                             </li>
                                             <li>
-                                                <a class="dropdown-item" href="pages-profile-user.html">
-                                                    <i class="bx bx-user me-2"></i>
-                                                    <span class="align-middle">My Profile</span>
-                                                </a>
-                                            </li>
-                                            <li>
-                                                <a class="dropdown-item" href="pages-account-settings-account.html">
+                                                <a class="dropdown-item" href="@Url.Action("Index","Settings")">
                                                     <i class="bx bx-cog me-2"></i>
-                                                    <span class="align-middle">Settings</span>
+                                                    <span class="align-middle">Account Settings</span>
                                                 </a>
                                             </li>
                                             <li>

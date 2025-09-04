@@ -47,9 +47,10 @@ namespace NoteApp.Repository
             return entries;
         }
 
-        public List<DailyEntry> GetAllNote()
+        public List<DailyEntry> GetAllNote(string userId)
         {
             using var command = CreateCommand("get_all_entry");
+            command.Parameters.AddWithValue("@UserId", userId);
 
             using var reader = command.ExecuteReader();
             List<DailyEntry> entries = new List<DailyEntry>();

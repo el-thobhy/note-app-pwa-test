@@ -3,11 +3,12 @@ using Microsoft.AspNetCore.Mvc;
 using NoteApp.Helper;
 using NoteApp.Models;
 using NoteApp.Services;
+using NoteAppPWA.Controllers;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace NoteApp.Controllers
 {
-    public class NoteController : Controller
+    public class NoteController : BaseController
     {
         private readonly INoteService _noteService;
         private readonly IDailyEntryService _entryService;
@@ -41,10 +42,8 @@ namespace NoteApp.Controllers
         [ValidateAntiForgeryToken]
         public IActionResult AddEntry(DailyEntry entry)
         {
-            var token = HttpContext.Session.GetString("Token");
-            string? userId = JwtHelper.GetName(token);
-            entry.Created_by = userId;
-            entry.UserId = userId ?? "guest";
+            entry.Created_by = UserId;
+            entry.UserId = UserId ?? "guest";
             _entryService.AddEntry(entry);
             return Ok();
         }
@@ -52,9 +51,7 @@ namespace NoteApp.Controllers
         [HttpPost]
         public IActionResult UpdateEntry(DailyEntry entry)
         {
-            var token = HttpContext.Session.GetString("Token");
-            string? userId = JwtHelper.GetName(token);
-            entry.Modified_by = userId;
+            entry.Modified_by = UserId;
             _entryService.UpdateEntry(entry);
             return Ok();
         }
@@ -73,18 +70,14 @@ namespace NoteApp.Controllers
         [ValidateAntiForgeryToken]
         public IActionResult UpdateDate(int id, string date)
         {
-            var token = HttpContext.Session.GetString("Token");
-            string? userId = JwtHelper.GetName(token);
-            _entryService.UpdateDate(id, date, userId);
+            _entryService.UpdateDate(id, date, UserId);
             return Ok();
         }
 
         [HttpPost]
         public IActionResult DeleteEntry(int id)
         {
-            var token = HttpContext.Session.GetString("Token");
-            string? userId = JwtHelper.GetName(token);
-            _entryService.DeleteEntry(id, userId);
+            _entryService.DeleteEntry(id, UserId);
             return Ok();
         }
     }
