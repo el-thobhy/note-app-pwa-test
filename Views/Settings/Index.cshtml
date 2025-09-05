@@ -49,7 +49,7 @@
             </div>
             <hr class="my-0" />
             <div class="card-body">
-                <form id="formAccountSettings" method="POST" onsubmit="return false">
+                <form id="formAccountSettings" method="POST">
                     <div class="row">
                         <div class="mb-3 col-md-6">
                             <label for="firstName" class="form-label">First Name</label>
@@ -66,7 +66,7 @@
                         </div>
                     </div>
                     <div class="mt-2">
-                        <button type="submit" class="btn btn-primary me-2">Save changes</button>
+                        <button type="submit" id="updateFirsLastName" class="btn btn-primary me-2">Save changes</button>
                         <button type="reset" class="btn btn-label-secondary">Cancel</button>
                     </div>
                 </form>
@@ -132,6 +132,52 @@
 
 @section Scripts {
     <script>
+        $(document).ready(function () {
+            if (localStorage.getItem("btnSuccess") === "true") {
+                const $btn = $("#updateFirsLastName");
+                $btn.prepend('<i class="bx bx-check me-1"></i>')
+
+                // Hapus supaya tidak muncul terus menerus di reload berikutnya
+                localStorage.removeItem("btnSuccess");
+            }
+        });
+        //update firstname lastname
+        $("#formAccountSettings").on('submit', function(e){
+            const $btn = $("#updateFirsLastName");
+            $btn.prop("disabled", true).html(`<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Menyimpan...`);
+            
+            var formData = new FormData(this);
+
+            e.preventDefault();
+            $.ajax({
+                type: "POST",
+                url: "/Settings/UpdateProfile",
+                data: formData,
+                processData :false,
+                contentType :false,
+                success: function (response) {
+                    if (response.success) {
+                        $btn.prop("disabled", false).html(`Save changes`);
+                        $btn.prepend('<i class="bx bx-check me-1"></i>')
+                        
+                        // Simpan state ke localStorage agar tetap muncul setelah reload
+                        localStorage.setItem("btnSuccess", "true");
+
+
+                        // Delay sedikit supaya user lihat ikonnya
+                        setTimeout(function () {
+                            location.reload();
+                        }, 800); // 0.8 detik, bisa disesuaikan
+                    }
+                },
+                error: function(response){
+                    alert("failed to update profile: "+ response.message);
+                    $btn.prop("disabled", false).html(`Save changes`);
+
+                }
+            });
+        });
+
          // Update Profile photos
         $("#updateProfileForm").submit(function (e) {
 
@@ -159,7 +205,7 @@
                         $img.attr("src", src);
 
                         // Kalau mau reload semua halaman (opsional)
-                        // location.reload();
+                        location.reload();
                     }
                 },
                 error: function(){
