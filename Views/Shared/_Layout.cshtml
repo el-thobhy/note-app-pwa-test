@@ -86,6 +86,21 @@
     <script src="../../frest/assets/vendor/js/template-customizer.js"></script>
     <!--? Config:  Mandatory theme config file contain global vars & default theme options, Set your preferred theme option in this file.  -->
     <script src="../../frest/assets/js/config.js"></script>
+    <style>
+        .install-text {
+            display: inline-block;
+            max-width:0;
+            overflow: hidden;
+            white-space: nowrap;
+            transition: max-width 0.5s ease-in-out, opacity 0.3s ease-in-out;
+        }
+
+        #btnInstall:hover .install-text{
+            max-width: 150px;
+            opacity: 1;
+        }
+
+    </style>
 </head>
 
 <body>
@@ -214,6 +229,15 @@
                                     <!-- /Search -->
                                 }
                                 <ul class="navbar-nav flex-row align-items-center ms-auto">
+                                    <!-- install PWA -->
+                                    <li class="nav-item me-2 me-xl-0">
+                                        <a class="nav-link d-flex align-items-center" id="btnInstall" href="javascript:void(0);" style="display:none;" data-bs-toggle="tooltip" title="Install App">
+                                            <i class="bx bx-sm bx-download"></i> 
+                                            <span class="install-text ms-2">Install App</span>
+                                        </a>
+                                    </li>
+                                    <!-- install PWA -->
+
                                     <!-- Style Switcher -->
                                     <li class="nav-item me-2 me-xl-0">
                                         <a class="nav-link style-switcher-toggle hide-arrow" href="javascript:void(0);">
@@ -380,6 +404,40 @@
                 .then(reg => console.log("Service Worker registerd", reg))
                 .catch(err => console.log("Service Worker failed", err));
         }
+
+
+        let deferredPrompt;
+        const btnInstall = document.getElementById("btnInstall");
+
+        window.addEventListener("beforeinstallprompt", (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            btnInstall.style.display = "block";
+        });
+
+        btnInstall.addEventListener("click", async () => {
+            if(!deferredPrompt) return;
+
+            deferredPrompt.prompt();
+
+            const { outcome } = await deferredPrompt.userChoice;
+            console.log(`User response to install: ${outcome}`);
+
+            //reset agar tidak dipanggil 2 kali
+            deferredPrompt = null;
+            btnInstall.style.display = "none";
+        });
+
+        window.addEventListener("appinstalled", () => {
+            console.log("PWA was installed");
+        });
+
+
+        //tooltip
+        document.addEventListener("DOMContentLoaded", () => {
+            const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+            tooltipTriggerList.map(el => new bootstrap.Tooltip(el));
+        });
 
     </script>
     @await RenderSectionAsync("Scripts", required: false)
