@@ -1,8 +1,32 @@
 ﻿@{
     ViewBag.Title = "Security";
     Layout = "~/Views/Shared/_Layout.cshtml";
+
+    var userName = Context.Session.GetString("UserName") ?? "";
 }
 
+<style>
+    /* Hijau untuk valid */
+    .is-valid {
+        border-color: #198754 !important; /* Bootstrap success */
+        padding-right: calc(1.5em + .75rem);
+        background-image: url("data:image/svg+xml,..."); /* icon check */
+        background-repeat: no-repeat;
+        background-position: right calc(.375em + .1875rem) center;
+        background-size: calc(.75em + .375rem) calc(.75em + .375rem);
+    }
+
+    /* Merah untuk invalid */
+    .is-invalid {
+        border-color: #dc3545 !important; /* Bootstrap danger */
+        padding-right: calc(1.5em + .75rem);
+        background-image: url("data:image/svg+xml,..."); /* icon x */
+        background-repeat: no-repeat;
+        background-position: right calc(.375em + .1875rem) center;
+        background-size: calc(.75em + .375rem) calc(.75em + .375rem);
+    }
+
+</style>
 <h4 class="py-3 breadcrumb-wrapper mb-4">
     <span class="text-muted fw-light">Account Settings /</span> Security
 </h4>
@@ -22,19 +46,8 @@
             <h5 class="card-header">Change Password</h5>
             <div class="card-body">
                 <form id="formAccountSettings" method="POST" onsubmit="return false">
-                    <div class="row">
-                        <div class="mb-3 col-md-6 form-password-toggle">
-                            <label class="form-label" for="currentPassword">Current Password</label>
-                            <div class="input-group input-group-merge">
-                                <input class="form-control"
-                                       type="password"
-                                       name="currentPassword"
-                                       id="currentPassword"
-                                       placeholder="&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;" />
-                                <span class="input-group-text cursor-pointer"><i class="bx bx-hide"></i></span>
-                            </div>
-                        </div>
-                    </div>
+                    @Html.AntiForgeryToken()
+                    <input name="UserName" type="hidden" value="@userName" />
                     <div class="row">
                         <div class="mb-3 col-md-6 form-password-toggle">
                             <label class="form-label" for="newPassword">New Password</label>
@@ -42,7 +55,6 @@
                                 <input class="form-control"
                                        type="password"
                                        id="newPassword"
-                                       name="newPassword"
                                        placeholder="&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;" />
                                 <span class="input-group-text cursor-pointer"><i class="bx bx-hide"></i></span>
                             </div>
@@ -53,7 +65,7 @@
                             <div class="input-group input-group-merge">
                                 <input class="form-control"
                                        type="password"
-                                       name="confirmPassword"
+                                       name="Password"
                                        id="confirmPassword"
                                        placeholder="&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;" />
                                 <span class="input-group-text cursor-pointer"><i class="bx bx-hide"></i></span>
@@ -62,14 +74,13 @@
                         <div class="col-12 mb-4">
                             <p class="fw-semibold mt-2">Password Requirements:</p>
                             <ul class="ps-3 mb-0">
-                                <li class="mb-1">Minimum 8 characters long - the more, the better</li>
-                                <li class="mb-1">At least one lowercase character</li>
-                                <li>At least one number, symbol, or whitespace character</li>
+                                <li id="ruleLength" class="mb-1">❌ Minimum 8 characters long - the more, the better</li>
+                                <li id="ruleLowerUpper" class="mb-1">❌ At least one lowercase and uppercase character</li>
+                                <li id="ruleDigitSymbolWS">❌ At least one number, symbol, or whitespace character</li>
                             </ul>
                         </div>
                         <div class="col-12 mt-1">
-                            <button type="submit" class="btn btn-primary me-2">Save changes</button>
-                            <button type="reset" class="btn btn-label-secondary">Cancel</button>
+                            <button type="submit" id="btnSave" class="btn btn-primary me-2">Save changes</button>
                         </div>
                     </div>
                 </form>
@@ -78,3 +89,163 @@
         <!--/ Change Password -->
     </div>
 </div>
+
+
+<!--Modal Error-->
+<div class="modal fade" id="errorModal" tabindex="-1" aria-labelledby="errorModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content text-center p-4" style="border-left: 5px solid #dc3545;">
+            <div class="modal-header border-0">
+                <h5 class="modal-title text-danger" id="errorModalLabel">Error</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p id="errorMessage">Something went wrong. Please try again.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+@section Scripts {
+    <script>
+        $(document).ready(function(){
+            if (localStorage.getItem("btnSuccess") === "true") {
+                const $btn = $("#btnSave");
+                $btn.prepend('<i class="bx bx-check me-1"></i>')
+
+                // Hapus supaya tidak muncul terus menerus di reload berikutnya
+                localStorage.removeItem("btnSuccess");
+            }
+            let newPassword = $("#newPassword");
+            let confirmPassword = $("#confirmPassword");
+            var isValid = false;
+
+            $("#btnSave").prop("disabled", true);
+            $("#confirmPassword").attr("disabled", true);
+
+            var length = false;
+            var lowerUpper = false;
+            var symbol = false;
+
+            var isMeetReq = false;
+
+            newPassword.on('keyup',function(){
+
+                var newPass = $(this).val();
+                //length
+                if(newPass.length >= 8){
+                    length = true;
+                    $("#ruleLength").text("✅ Minimum 8 characters long - the more, the better");
+                }else{
+                    length = false;
+                    $("#ruleLength").text("❌ Minimum 8 characters long - the more, the better");
+                }
+
+                //cek huruf kecil
+                if(/[a-z]/.test($(this).val()) && /[A-Z]/.test($(this).val())){
+                    lowerUpper = true;
+                    $("#ruleLowerUpper").text("✅ At least one lowercase and uppercase character");
+                }else{
+                    lowerUpper = false;
+                    $("#ruleLowerUpper").text("❌ At least one lowercase and uppercase character");
+                }
+
+                //cek simbol
+                if(/[\d\W\s]/.test($(this).val())){
+                    symbol = true;
+                    $("#ruleDigitSymbolWS").text("✅ At least one number, symbol, or whitespace character");
+                }else{
+                    symbol = false;
+                    $("#ruleDigitSymbolWS").text("❌ At least one number, symbol, or whitespace character");
+                }
+
+                isMeetReq = length && lowerUpper && symbol;
+
+                if(isMeetReq){
+                    $("#confirmPassword").attr("disabled", false);
+                }else{
+                    $("#confirmPassword").attr("disabled", true);
+                }
+            });
+
+            var isCorrect = false;
+                 $("#newPassword, #confirmPassword").on("keyup", function () {
+                var newPassword = $("#newPassword").val();
+                var confirmPassword = $("#confirmPassword").val();
+
+                if (confirmPassword.length === 0) {
+                    isCorrect = false;
+                    $("#confirmPassword").removeClass("is-valid is-invalid");
+                }
+                else if (newPassword === confirmPassword) {
+                    isCorrect = true;
+                    $("#confirmPassword").removeClass("is-invalid").addClass("is-valid");
+                }
+                else {
+                    isCorrect = false;
+                    $("#confirmPassword").removeClass("is-valid").addClass("is-invalid");
+                }
+            });
+
+
+            $("#newPassword, #confirmPassword").on('keyup', function(){
+                if(isMeetReq && isCorrect){
+                    isValid = true;
+                    $("#btnSave").prop("disabled", false);
+                }else{
+                    isValid = false;
+                    $("#btnSave").prop("disabled", true);
+                }
+            });
+
+
+            $("#formAccountSettings").on('submit', function(e){
+                e.preventDefault();
+
+                if(isValid){
+                    const $btn = $("#btnSave");
+                    $btn.prop("disabled", true).html(`<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Menyimpan...`);
+
+                    var formData = new FormData(this);
+
+                    e.preventDefault();
+                    $.ajax({
+                        type: "POST",
+                        url: "/Settings/ChangePassword",
+                        data: formData,
+                        processData :false,
+                        contentType :false,
+                        success: function (response) {
+                            if (response.success) {
+                                $btn.prop("disabled", false).html(`Save changes`);
+                                $btn.prepend('<i class="bx bx-check me-1"></i>')
+
+                                // Simpan state ke localStorage agar tetap muncul setelah reload
+                                localStorage.setItem("btnSuccess", "true");
+
+
+                                // Delay sedikit supaya user lihat ikonnya
+                                setTimeout(function () {
+                                    location.reload();
+                                }, 800); // 0.8 detik, bisa disesuaikan
+                            }else{
+                                $btn.prop("disabled", false).html(`Save changes`);
+
+                                $('#errorMessage').text(response.message);
+                                $('#errorModal').modal('show');
+                            }
+                        },
+                        error: function (e) {
+                            $btn.prop("disabled", false).html(`Save changes`);
+
+                            // Sembunyikan modal loading
+                            $('#errorMessage').text("Something went wrong");
+                            $('#errorModal').modal('show');
+                        }
+                    });
+                }
+            });
+        });
+    </script>
+}

@@ -97,6 +97,45 @@ namespace NoteAppPWA.Controllers
             }
         }
 
+
+
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public async Task<IActionResult> ChangePassword(UpdatePasswordViewModel request)
+        {
+            try
+            {
+                var result = await _settingServices.UpdatePassword(request);
+                if (result.Success)
+                {
+                    return Ok(new
+                    {
+                        success = true,
+                        message = "Profile Updated",
+                        data = result.Data
+                    });
+                }
+                else
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = result.Message
+                    });
+                }
+            }
+            catch (Exception e)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = e.Message
+                });
+            }
+        }
+
+
+
         public IActionResult Security()
         {
             return View();

@@ -77,5 +77,29 @@ namespace NoteAppPWA.Services
 
             return response ?? new LoginResponseViewModel();
         }
+
+        public async Task<LoginResponseViewModel> UpdatePassword(UpdatePasswordViewModel request)
+        {
+            string token = _httpContextAccessor?.HttpContext?.Session.GetString("Token") ?? "";
+            _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+            var json = JsonConvert.SerializeObject(request);
+
+            var url = $"{_routeApi}/api/Account/ChangePassword";
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            HttpResponseMessage httpResponseMessage = await _client.PostAsync(url, content);
+            if (httpResponseMessage.IsSuccessStatusCode)
+            {
+                response = JsonConvert.DeserializeObject<LoginResponseViewModel>(await httpResponseMessage.Content.ReadAsStringAsync());
+            }
+            else
+            {
+                response = JsonConvert.DeserializeObject<LoginResponseViewModel>(await httpResponseMessage.Content.ReadAsStringAsync());
+            }
+
+
+            return response ?? new LoginResponseViewModel();
+        }
     }
 }
