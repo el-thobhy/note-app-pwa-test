@@ -9,77 +9,134 @@
     </button>
 </div>
 <hr />
-<div class="row" id="notesContainer">
-    @if (Model.Count > 0)
-    {
-        <div class="row">
-        @foreach (var note in Model)
+<div id="page-content" style="display:none;">
+    <div class="row" id="notesContainer">
+        @if (Model.Count > 0)
         {
+            <div class="row">
+            @foreach (var note in Model)
+            {
 
-                <div class="col-sm-6 col-lg-4 mb-4 cursor-pointer">
-                    <div class="card card-border-shadow-primary h-100"
-                         onclick="window.location.href='/Note/Detail?id=@note.Id'">
-                        <div class="card-body">
-                            <div class="d-flex align-items-center justify-content-between mb-2 pb-1">
-                                <div class="d-flex">
-                                    <div class="avatar me-2">
-                                        <span class="avatar-initial rounded bg-label-primary"><i class="bx bxs-playlist"></i></span>
+                    <div class="col-sm-6 col-lg-4 mb-4 cursor-pointer">
+                        <div class="card card-border-shadow-primary h-100"
+                             onclick="window.location.href='/Note/Detail?id=@note.Id'">
+                            <div class="card-body">
+                                <div class="d-flex align-items-center justify-content-between mb-2 pb-1">
+                                    <div class="d-flex">
+                                        <div class="avatar me-2">
+                                            <span class="avatar-initial rounded bg-label-primary"><i class="bx bxs-playlist"></i></span>
+                                        </div>
+                                        <h4 class="ms-1 mb-0 text-nowrap px-3">@note.Entries.Count entry</h4>
                                     </div>
-                                    <h4 class="ms-1 mb-0 text-nowrap px-3">@note.Entries.Count entry</h4>
+                                    <p class="mb-0 px-2">
+                                        <span class="text-warning ps-2"
+                                                onclick="event.stopPropagation(); openEditModal(@note.Id);">
+                                            <i class="bi bi-pencil-square"></i>
+                                        </span>
+                                        <span class="text-danger ps-2"
+                                                onclick="event.stopPropagation(); openDeleteModal(@note.Id, '@note.Title');">
+                                            <i class="bi bi-trash3"></i>
+                                        </span>
+                                    </p>
                                 </div>
-                                <p class="mb-0 px-2">
-                                    <span class="text-warning ps-2"
-                                            onclick="event.stopPropagation(); openEditModal(@note.Id);">
-                                        <i class="bi bi-pencil-square"></i>
-                                    </span>
-                                    <span class="text-danger ps-2"
-                                            onclick="event.stopPropagation(); openDeleteModal(@note.Id, '@note.Title');">
-                                        <i class="bi bi-trash3"></i>
-                                    </span>
-                                </p>
+                                <p class="mb-1"> @note.Title</p>
                             </div>
-                            <p class="mb-1"> @note.Title</p>
+                        </div>
+                    </div>
+         
+            }
+            </div>
+            <hr />
+
+        }
+        else
+        {
+            <div class="col-12">
+                <div class="alert alert-info text-center rounded-4 shadow-sm">
+                    <i class="bi bi-info-circle me-2"></i> Belum ada note. Tambahkan satu dengan tombol di atas.
+                </div>
+            </div>
+        }
+    </div>
+    <div class="row note-table d-none d-lg-block">
+        <div class="col-12">
+            <div class="card p-3">
+                <table class="card-datatable table table-condensed" id="tableTimesheet">
+                    <thead>
+                        <tr>
+                            <th rowspan="2" style="align-content:center">Date</th>
+                            <th colspan="2" style="align-content:center">Working Hour</th>
+                            <th colspan="2" style="align-content:center">Over Time</th>
+                            <th rowspan="2" style="align-content:center">Total Hour</th>
+                            <th rowspan="2" style="align-content:center">Total OT</th>
+                            <th rowspan="2" style="align-content:center">Status</th>
+                            <th rowspan="2" style="align-content:center">Activity/Remark</th>
+                        </tr>
+                        <tr>
+                            <th>Start</th>
+                            <th>End</th>
+                            <th>Start</th>
+                            <th>End</th>
+                        </tr>
+                    </thead>
+                </table>
+
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Skeleton -->
+<!-- Skeleton Loader -->
+<div id="skeleton-container" class="container-fluid p-4">
+    <div class="row">
+        <!-- Main Content -->
+        <div class="col-12">
+            <!-- Content cards skeleton -->
+            <div class="row">
+                <div class="col-sm-6 col-lg-4 col-md-3 mb-3">
+                    <div class="card" aria-hidden="true">
+                        <div class="card-body">
+                            <h5 class="card-title placeholder-glow">
+                                <span class="placeholder col-6"></span>
+                            </h5>
+                            <p class="card-text placeholder-glow">
+                                <span class="placeholder col-7"></span>
+                                <span class="placeholder col-4"></span>
+                                <span class="placeholder col-4"></span>
+                            </p>
+                            <a href="#" tabindex="-1" class="btn btn-primary disabled placeholder col-6"></a>
                         </div>
                     </div>
                 </div>
-         
-        }
-        </div>
-        <hr />
 
-    }
-    else
-    {
-        <div class="col-12">
-            <div class="alert alert-info text-center rounded-4 shadow-sm">
-                <i class="bi bi-info-circle me-2"></i> Belum ada note. Tambahkan satu dengan tombol di atas.
+                <div class="col-sm-6 col-lg-4 col-md-3 mb-3">
+                    <div class="card" aria-hidden="true">
+                        <div class="card-body">
+                            <h5 class="card-title placeholder-glow">
+                                <span class="placeholder col-5"></span>
+                            </h5>
+                            <p class="card-text placeholder-glow">
+                                <span class="placeholder col-6"></span>
+                                <span class="placeholder col-8"></span>
+                            </p>
+                            <a href="#" tabindex="-1" class="btn btn-primary disabled placeholder col-4"></a>
+                        </div>
+                    </div>
+                </div>
             </div>
-        </div>
-    }
-</div>
-<div class="row note-table d-none d-lg-block">
-    <div class="col-12">
-        <div class="card p-3">
-            <table class="card-datatable table table-condensed" id="tableTimesheet">
-                <thead>
-                    <tr>
-                        <th rowspan="2" style="align-content:center">Date</th>
-                        <th colspan="2" style="align-content:center">Working Hour</th>
-                        <th colspan="2" style="align-content:center">Over Time</th>
-                        <th rowspan="2" style="align-content:center">Total Hour</th>
-                        <th rowspan="2" style="align-content:center">Total OT</th>
-                        <th rowspan="2" style="align-content:center">Status</th>
-                        <th rowspan="2" style="align-content:center">Activity/Remark</th>
-                    </tr>
-                    <tr>
-                        <th>Start</th>
-                        <th>End</th>
-                        <th>Start</th>
-                        <th>End</th>
-                    </tr>
-                </thead>
-            </table>
+            <div class="row note-table d-none d-lg-block">
+                <div class="col-12">
+                    <div class="card p-3">
+                        <table class="card-datatable placeholder-glow table table-condensed">
+                            <thead class="placeholder">
+                               
+                            </thead>
+                        </table>
 
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 </div>

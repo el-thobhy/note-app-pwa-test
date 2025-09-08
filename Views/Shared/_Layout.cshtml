@@ -78,6 +78,7 @@
 
     <!-- Page CSS -->
     <link rel="stylesheet" href="../../frest/assets/vendor/css/pages/app-logistics-dashboard.css" />
+    <link rel="stylesheet" href="~/css/site.css" />
     <!-- Helpers -->
     <script src="../../frest/assets/vendor/js/helpers.js"></script>
 
@@ -86,21 +87,6 @@
     <script src="../../frest/assets/vendor/js/template-customizer.js"></script>
     <!--? Config:  Mandatory theme config file contain global vars & default theme options, Set your preferred theme option in this file.  -->
     <script src="../../frest/assets/js/config.js"></script>
-    <style>
-        .install-text {
-            display: inline-block;
-            max-width:0;
-            overflow: hidden;
-            white-space: nowrap;
-            transition: max-width 0.5s ease-in-out, opacity 0.3s ease-in-out;
-        }
-
-        #btnInstall:hover .install-text{
-            max-width: 150px;
-            opacity: 1;
-        }
-
-    </style>
 </head>
 
 <body>
@@ -366,7 +352,7 @@
     <script src="../../frest/assets/js/app-logistics-dashboard.js"></script>
 
     <script src="~/tinymce/tinymce.min.js" referrerpolicy="origin"></script>
-    <script src="~/js/site.js referrerpolicy="origin"></script>
+    <script src="~/js/site.js" referrerpolicy="origin"></script>
     <script src="../../frest/assets/vendor/libs/datatables-bs5/datatables-bootstrap5.js"></script>
     @await RenderSectionAsync("Scripts", required: false)
 </body>
