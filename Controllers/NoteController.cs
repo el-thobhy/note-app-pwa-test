@@ -4,6 +4,8 @@ using NoteApp.Helper;
 using NoteApp.Models;
 using NoteApp.Services;
 using NoteAppPWA.Controllers;
+using NoteAppPWA.Helper;
+using NoteAppPWA.Models;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace NoteApp.Controllers
@@ -12,11 +14,15 @@ namespace NoteApp.Controllers
     {
         private readonly INoteService _noteService;
         private readonly IDailyEntryService _entryService;
+        private readonly IEmailHelper _emailHelper;
+        private readonly IConfiguration _configuration;
 
-        public NoteController(INoteService noteService, IDailyEntryService entryService)
+        public NoteController(INoteService noteService, IDailyEntryService entryService, IConfiguration configuration)
         {
+            _configuration = configuration;
             _noteService = noteService;
             _entryService = entryService;
+            _emailHelper = new EmailHelper(_configuration);
         }
         [UserIdAuthorize]
         public IActionResult Detail(int id, string? date)
@@ -79,6 +85,20 @@ namespace NoteApp.Controllers
         {
             _entryService.DeleteEntry(id, UserId);
             return Ok();
+        }
+
+        [HttpPost]
+        public IActionResult ShareNote(ShareEmailModel model)
+        {
+            try
+            {
+                _emailHelper.SendEmail(model);
+                return Json(new { success=true, message="Catatan berhasil dikirim" });
+            }
+            catch (Exception e)
+            {
+                return Json(new { success = false, message = "Catatan Gagal dikirim: "+e.Message });
+            }
         }
     }
 }

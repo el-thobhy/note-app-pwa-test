@@ -1,4 +1,5 @@
 using NoteApp.Services;
+using NoteAppPWA.Helper;
 using NoteAppPWA.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -18,6 +19,7 @@ builder.Services.AddSingleton<IDailyEntryService, DailyEntryService>();
 builder.Services.AddSingleton<ISettingServices, SettingServices>();
 builder.Services.AddHttpClient();
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<IEmailHelper, EmailHelper>();
 
 var app = builder.Build();
 
