@@ -26,6 +26,10 @@
     var marginLeftStyleFooter = !string.IsNullOrEmpty(userName) ? "padding-left:220px; background: #fff; z-index:9;" : "background: #fff; z-index:9;";
 }
 
+@inject IConfiguration Configuration
+@{
+    var timeout = Configuration.GetValue<int>("SessionSettings:IdleTimeoutMinutes");
+}
 <!DOCTYPE html>
 
 <html lang="en"
@@ -90,6 +94,22 @@
 </head>
 
 <body>
+    <!-- Modal Session Expired -->
+    <div class="modal fade" id="sessionModal" data-bs-backdrop="static" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Session Expired</h5>
+                </div>
+                <div class="modal-body">
+                    Sesi kamu sudah habis. Silakan login kembali.
+                </div>
+                <div class="modal-footer">
+                    <a href="@Url.Action("Auth", "Login")" class="btn btn-primary">Login</a>
+                </div>
+            </div>
+        </div>
+    </div>
     <!-- Layout wrapper -->
     <div class="layout-wrapper layout-content-navbar">
         <div class="layout-container">
@@ -354,6 +374,13 @@
     <script src="~/tinymce/tinymce.min.js" referrerpolicy="origin"></script>
     <script src="~/js/site.js" referrerpolicy="origin"></script>
     <script src="../../frest/assets/vendor/libs/datatables-bs5/datatables-bootstrap5.js"></script>
+    <script>
+        var sessionTimeout = parseInt('@(timeout*60*1000)');
+
+        setTimeout(function(){
+            $("#sessionModal").modal('show');
+        }, sessionTimeout - 5000);
+    </script>
     @await RenderSectionAsync("Scripts", required: false)
 </body>
 </html>

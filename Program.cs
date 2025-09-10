@@ -4,13 +4,15 @@ using NoteAppPWA.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var sessionTimeOut = builder.Configuration.GetSection("SessionSettings:IdleTimeoutMinutes").Get<int>();
 // Menambahkan session services
 builder.Services.AddDistributedMemoryCache(); // Menyimpan session di memori
 builder.Services.AddSession(options =>
 {
-    options.IdleTimeout = TimeSpan.FromMinutes(30); // Timeout session 30 menit
+    options.IdleTimeout = TimeSpan.FromMinutes(sessionTimeOut); // Timeout session 30 menit
     options.Cookie.HttpOnly = true; // Menjamin hanya bisa diakses di server
     options.Cookie.IsEssential = true; // Pastikan cookie selalu dikirim meskipun tidak ada interaksi
+    options.Cookie.MaxAge = options.IdleTimeout; // <== penting
 });
 // Add services to the container.
 builder.Services.AddControllersWithViews();

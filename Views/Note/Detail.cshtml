@@ -374,6 +374,7 @@ else
                         $("#shareModal").modal('hide');
                         $("#successMessage").text(response.message);
                         $("#shareSuccessModal").modal('show');
+                        $btn.prop("disabled", false).html(`<i class="bi bi-save me-1"></i>Kirim`);
 
                         setTimeout(function (){
                             $("#shareSuccessModal").modal('hide');    
