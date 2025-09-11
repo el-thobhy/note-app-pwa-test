@@ -33,11 +33,11 @@ $("#deleteNoteFormEntries").submit(function (e) {
 });
 
 //For PWA
-if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('../../sw.js')
-        .then(reg => console.log("Service Worker registerd", reg))
-        .catch(err => console.log("Service Worker failed", err));
-}
+//if ('serviceWorker' in navigator) {
+//    navigator.serviceWorker.register('../../sw.js')
+//        .then(reg => console.log("Service Worker registerd", reg))
+//        .catch(err => console.log("Service Worker failed", err));
+//}
 
 
 let deferredPrompt;
