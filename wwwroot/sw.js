@@ -32,7 +32,9 @@ const STATIC_ASSETS = [
     '/frest/assets/js/app-logistics-dashboard.js',
     '/tinymce/tinymce.min.js',
     '/js/site.js',
-    '/frest/assets/vendor/libs/datatables-bs5/datatables-bootstrap5.js'
+    '/frest/assets/vendor/libs/datatables-bs5/datatables-bootstrap5.js',
+    '/sw.js',
+    '/manifest.json'
 ];
 
 // Cache static files on install
