@@ -38,7 +38,14 @@
                 IsBodyHtml = true,
             };
 
-            mailMessage.To.Add(model.Email);
+
+            foreach (var mailTo in model.Email.Split(';'))
+            {
+                if (!string.IsNullOrEmpty(mailTo))
+                {
+                    mailMessage.To.Add(mailTo);
+                }
+            }
 
             smtpClient.Send(mailMessage);
         }

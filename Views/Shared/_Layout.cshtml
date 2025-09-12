@@ -155,9 +155,9 @@
                         <ul class="menu-inner py-1">
                             @foreach (var entry in entries)
                             {
-                                <li class="menu-item  @(entry.Date == selectedDateStr ? "open active" : "")">
+                                <li class="menu-item list-item @(entry.Date == selectedDateStr ? "open active" : "")" data-date="@entry.Date">
                                  <div class="d-flex align-items-center">
-                                    <a href="/Note/Detail?id=@Model.Id&date=@entry.Date" class="menu-link d-flex align-items-center">
+                                    <a href="javascript:void(0)" data-id="@entry.Id" class="listDateSidebar menu-link d-flex align-items-center">
                                         <i class="menu-icon tf-icons bx bx-calendar"></i>
                                         <div data-i18n="@(string.IsNullOrEmpty(entry.Date) ? "" : Convert.ToDateTime(entry.Date).ToString("dddd dd MMM yyyy"))">
                                             @(string.IsNullOrEmpty(entry.Date) ? "" : Convert.ToDateTime(entry.Date).ToString("dddd dd MMM yyyy"))

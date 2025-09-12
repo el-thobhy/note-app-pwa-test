@@ -5,6 +5,7 @@ using NoteApp.Helper;
 using NoteApp.Models;
 using NoteApp.Services;
 using NoteAppPWA.Controllers;
+using static Azure.Core.HttpHeader;
 
 namespace NoteApp.Controllers
 {
@@ -21,27 +22,40 @@ namespace NoteApp.Controllers
         // GET: /Home/Index
         public IActionResult Index()
         {
-            List<Note> notes = [];
-            List<DailyEntry> entries = [];
-            if (UserId == "admin")
-            {
-                notes = _noteService.GetAllNotes();
-                for (int i = 0; i < notes.Count; i++)
-                {
-                    notes[i].Entries = _noteService.GetAllDailyEntriesByNoteId(notes[i].Id);
-                }
-            }
-            else
-            {
-                notes = _noteService.GetAllNotesByUserId(UserId);
-                for(int i = 0; i< notes.Count; i++)
-                {
-                    notes[i].Entries = _noteService.GetAllDailyEntriesByNoteId(notes[i].Id);
-                }
-            }
-            return View(notes);
+            return View();
         }
 
+        [HttpGet]
+        public IActionResult GetDataHome()
+        {
+            List<Note> notes = [];
+            try
+            {
+                List<DailyEntry> entries = [];
+                if (UserId == "admin")
+                {
+                    notes = _noteService.GetAllNotes();
+                    for (int i = 0; i < notes.Count; i++)
+                    {
+                        notes[i].Entries = _noteService.GetAllDailyEntriesByNoteId(notes[i].Id);
+                    }
+                }
+                else
+                {
+                    notes = _noteService.GetAllNotesByUserId(UserId);
+                    for (int i = 0; i < notes.Count; i++)
+                    {
+                        notes[i].Entries = _noteService.GetAllDailyEntriesByNoteId(notes[i].Id);
+                    }
+                }
+                return Json(new { success=true, message="Get Data Success", data=notes } );
+            }
+            catch (Exception e)
+            {
+                return Json(new { success = false, message = "Get Data Failed: "+e.Message, data = notes });
+            }
+            
+        }
 
         public JsonResult GetAllEntries()
         {

@@ -73,9 +73,3 @@ document.addEventListener("DOMContentLoaded", () => {
     tooltipTriggerList.map(el => new bootstrap.Tooltip(el));
 });
 
-
-//skeleton
-window.addEventListener("DOMContentLoaded", () => {
-    document.getElementById("skeleton-container").style.display = "none";
-    document.getElementById("page-content").style.display = "block";
-});

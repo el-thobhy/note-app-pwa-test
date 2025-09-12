@@ -34,14 +34,47 @@ namespace NoteApp.Controllers
             entries = entries.OrderByDescending(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).ToList();
             DateTime latest = entries.OrderByDescending(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).Select(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).FirstOrDefault();
             var selectedDate = string.IsNullOrEmpty(date) ? latest : DateTime.Parse(date);
-            var selectedEntry = entries.FirstOrDefault(e => (!string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now) == selectedDate.Date);
+            //var selectedEntry = entries.FirstOrDefault(e => (!string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now) == selectedDate.Date);
 
             ViewBag.SelectedDate = selectedDate;
             ViewBag.Entries = entries;
-            ViewBag.Entry = selectedEntry;
+            //ViewBag.Entry = selectedEntry;
             ViewBag.NoteTitle = note.Title;
 
             return View(note);
+        }
+
+
+        [HttpGet]
+        public IActionResult GetDetailNote(string? id, string? date, string? noteId)
+        {
+            try
+            {
+                DailyEntry entry = new();
+                if (!string.IsNullOrEmpty(id))
+                {
+                    entry = _entryService.GetEntryById(int.Parse(id));
+                }
+                else
+                {
+                    if (!string.IsNullOrEmpty(noteId))
+                    {
+
+                        var entries = _entryService.GetEntriesByNoteId(int.Parse(noteId));
+                        entries = entries.OrderByDescending(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).ToList();
+                        DateTime latest = entries.OrderByDescending(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).Select(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).FirstOrDefault();
+                      
+                        DateTime dateNote = !string.IsNullOrEmpty(date) ? Convert.ToDateTime(date) : latest;
+                        entry = entries.FirstOrDefault(e => (!string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now) == dateNote);
+
+                    }
+                }
+                return Json(new { success = true, message = "success get detail", data = entry });
+            }
+            catch (Exception e)
+            {
+                return Json(new { success = false, message = "failed get detail" });
+            }
         }
 
         [HttpPost]
