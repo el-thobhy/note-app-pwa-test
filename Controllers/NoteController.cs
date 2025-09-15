@@ -33,11 +33,12 @@ namespace NoteApp.Controllers
             var entries = _entryService.GetEntriesByNoteId(id);
             entries = entries.OrderByDescending(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).ToList();
             DateTime latest = entries.OrderByDescending(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).Select(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).FirstOrDefault();
-            var selectedDate = string.IsNullOrEmpty(date) ? latest : DateTime.Parse(date);
+            var selectedDate = string.IsNullOrEmpty(date) || date != "null" ? latest : DateTime.Parse(date);
             //var selectedEntry = entries.FirstOrDefault(e => (!string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now) == selectedDate.Date);
 
+
             ViewBag.SelectedDate = selectedDate;
-            ViewBag.Entries = entries;
+            ViewBag.Entries = _entryService.GetEntryListDateByNoteId(id);
             //ViewBag.Entry = selectedEntry;
             ViewBag.NoteTitle = note.Title;
 
@@ -60,12 +61,7 @@ namespace NoteApp.Controllers
                     if (!string.IsNullOrEmpty(noteId))
                     {
 
-                        var entries = _entryService.GetEntriesByNoteId(int.Parse(noteId));
-                        entries = entries.OrderByDescending(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).ToList();
-                        DateTime latest = entries.OrderByDescending(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).Select(e => !string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now).FirstOrDefault();
-                      
-                        DateTime dateNote = !string.IsNullOrEmpty(date) ? Convert.ToDateTime(date) : latest;
-                        entry = entries.FirstOrDefault(e => (!string.IsNullOrEmpty(e.Date) ? Convert.ToDateTime(e.Date) : DateTime.Now) == dateNote);
+                        entry = _entryService.GetEntriesByNoteId(int.Parse(noteId)).FirstOrDefault();
 
                     }
                 }

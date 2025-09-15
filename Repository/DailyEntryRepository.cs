@@ -146,5 +146,19 @@ namespace NoteApp.Repository
                 Is_delete = Convert.ToBoolean(reader["Is_delete"])
             };
         }
+
+        public List<DailyEntry> GetEntriesByNoteId(int noteId)
+        {
+            using var command = CreateCommand("get_list_date");
+            command.Parameters.AddWithValue("@NoteId", noteId);
+
+            using var reader = command.ExecuteReader();
+            List<DailyEntry> entries = new List<DailyEntry>();
+            while (reader.Read())
+            {
+                entries.Add(MapEntry(reader));
+            }
+            return entries;
+        }
     }
 }
