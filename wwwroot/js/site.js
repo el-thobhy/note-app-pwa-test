@@ -32,39 +32,39 @@ $("#deleteNoteFormEntries").submit(function (e) {
     });
 });
 
-////For PWA
-//if ('serviceWorker' in navigator) {
-//    navigator.serviceWorker.register('../../sw.js')
-//        .then(reg => console.log("Service Worker registerd", reg))
-//        .catch(err => console.log("Service Worker failed", err));
-//}
+//For PWA
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('../../sw.js')
+        .then(reg => console.log("Service Worker registerd", reg))
+        .catch(err => console.log("Service Worker failed", err));
+}
 
 
-//let deferredPrompt;
-//const btnInstall = document.getElementById("btnInstall");
+let deferredPrompt;
+const btnInstall = document.getElementById("btnInstall");
 
-//window.addEventListener("beforeinstallprompt", (e) => {
-//    e.preventDefault();
-//    deferredPrompt = e;
-//    btnInstall.style.display = "block";
-//});
+window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    btnInstall.style.display = "block";
+});
 
-//btnInstall.addEventListener("click", async () => {
-//    if (!deferredPrompt) return;
+btnInstall.addEventListener("click", async () => {
+    if (!deferredPrompt) return;
 
-//    deferredPrompt.prompt();
+    deferredPrompt.prompt();
 
-//    const { outcome } = await deferredPrompt.userChoice;
-//    console.log(`User response to install: ${outcome}`);
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log(`User response to install: ${outcome}`);
 
-//    //reset agar tidak dipanggil 2 kali
-//    deferredPrompt = null;
-//    btnInstall.style.display = "none";
-//});
+    //reset agar tidak dipanggil 2 kali
+    deferredPrompt = null;
+    btnInstall.style.display = "none";
+});
 
-//window.addEventListener("appinstalled", () => {
-//    console.log("PWA was installed");
-//});
+window.addEventListener("appinstalled", () => {
+    console.log("PWA was installed");
+});
 
 
 //tooltip
