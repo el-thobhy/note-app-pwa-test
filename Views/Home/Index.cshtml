@@ -78,35 +78,6 @@
     
     </div>
     <hr />
-    <div class="row note-table d-none d-lg-block">
-        <div class="col-12">
-            <div class="card p-3">
-                <table class="card-datatable table table-condensed" id="tableTimesheet">
-                    <thead>
-                        <tr>
-                            <th rowspan="2" style="align-content:center">Date</th>
-                            <th colspan="2" style="align-content:center">Working Hour</th>
-                            <th colspan="2" style="align-content:center">Over Time</th>
-                            <th rowspan="2" style="align-content:center">Total Hour</th>
-                            <th rowspan="2" style="align-content:center">Total OT</th>
-                            <th rowspan="2" style="align-content:center">Status</th>
-                            <th rowspan="2" style="align-content:center">Activity/Remark</th>
-                        </tr>
-                        <tr>
-                            <th>Start</th>
-                            <th>End</th>
-                            <th>Start</th>
-                            <th>End</th>
-                        </tr>
-                    </thead>
-                    <tbody id="skeletonRows">
-
-                    </tbody>
-                </table>
-
-            </div>
-        </div>
-    </div>
 </div>
 
 
@@ -239,62 +210,7 @@
                 $("#skeleton-container").hide();
             }
 
-            var table = $("#tableTimesheet").DataTable({
-                paging: true,
-                scrollX: true,
-                lengthChange: true,
-                searching: true,
-                ordering: true,
-                info: true,
-                autoWidth: false,
-                responsive: false,
-                order: [[0, "desc"]],
-                columnDefs: [
-                    { orderable: false, targets: [5] },
-                    { className: "text-center", targets: "_all" },
-                ],
-
-                language: {
-                    lengthMenu: "Show _MENU_ entries",
-                    zeroRecords: "Data is Empty",
-                    info: "Show _PAGE_ from _PAGES_ pages",
-                    infoEmpty: "Data Not Available",
-                    infoFiltered: "(filter from _MAX_ total data)"
-                },
-
-                processing: true,
-                serverSide: false,   // 🔥 ubah ke false kalau backend belum support server-side
-
-                ajax: {
-                    url: '/Home/GetAllEntries',
-                    type: 'GET',
-                    dataSrc: function (json) {
-                        console.log("Raw JSON:", json);  // 👉 debug di console
-                        return json.data;                // ambil array "data"
-                    }
-                },
-
-                columns: [
-                    { data: 'date' },
-                    { data: 'wH_start' },
-                    { data: 'wH_end' },
-                    { data: 'oT_start' },
-                    { data: 'oT_end' },
-                    { data: 'total_WH' },
-                    { data: 'total_OT' },
-                    { 
-                        data: 'status_absen',
-                        render: function(data){
-                            var status = data === "1" ? "Masuk" : 
-                                data === "2" ? "Cuti" :
-                                data === "3" ? "Libur" :
-                                data === "4" ? "Lainnya" : "";
-                            return status;
-                        }
-                    },
-                    { data: 'title_Note' }
-                ]
-            });
+           
         });
 
     </script>
