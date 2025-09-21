@@ -1,6 +1,10 @@
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
 using NoteApp.Services;
 using NoteAppPWA.Helper;
 using NoteAppPWA.Services;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,6 +27,19 @@ builder.Services.AddHttpClient();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<IEmailHelper, EmailHelper>();
 
+builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(options =>
+    {
+        options.LoginPath = "/Auth/Index"; // Redirect ke halaman login jika tidak terautentikasi
+        options.AccessDeniedPath = "/Auth/UnAuthorized"; // Path untuk un authorized
+        options.Cookie.Name = "kukiApp"; // Nama cookie autentikasi
+        options.Cookie.HttpOnly = true; // Mencegah akses JavaScript ke cookie
+        options.Cookie.SecurePolicy = CookieSecurePolicy.Always; // Hanya kirim cookie melalui HTTPS
+        options.Cookie.SameSite = SameSiteMode.Lax;
+        options.ExpireTimeSpan = TimeSpan.FromMinutes(sessionTimeOut); // Sesuaikan dengan kebutuhan
+        options.SlidingExpiration = true; // Perbarui waktu kedaluwarsa pada setiap permintaan
+    });
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -36,6 +53,8 @@ app.UseSession();
 app.UseStaticFiles();
 
 app.UseRouting();
+
+app.UseAuthentication();
 
 app.UseAuthorization();
 

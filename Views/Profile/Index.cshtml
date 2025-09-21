@@ -1,10 +1,10 @@
 ﻿@{
     ViewBag.Title = "My Profile";
     Layout = "~/Views/Shared/_Layout.cshtml";
-    var userName = Context.Session.GetString("UserName") ?? "";
-    var profile = Context.Session.GetString("Avatar") ?? "";
-    var fullName = Context.Session.GetString("FullName") ?? "";
-    var role = Context.Session.GetString("Roles") ?? "";
+    var userName = User?.FindFirst("UserName")?.Value ?? "";
+    var profile = User?.FindFirst("Avatar")?.Value ?? "";
+    var fullName = User?.FindFirst("FullName")?.Value ?? "";
+    var role = User?.FindFirst("Roles")?.Value ?? "";
     string avatar = !string.IsNullOrEmpty(profile) ? profile : $"https://ui-avatars.com/api/?name={userName}&background=random&color=ffffff&size=32";
 }
 

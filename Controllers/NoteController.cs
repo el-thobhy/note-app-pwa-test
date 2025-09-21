@@ -1,6 +1,5 @@
 ﻿using ELAuth.Helper;
 using Microsoft.AspNetCore.Mvc;
-using NoteApp.Helper;
 using NoteApp.Models;
 using NoteApp.Services;
 using NoteAppPWA.Controllers;
@@ -24,7 +23,6 @@ namespace NoteApp.Controllers
             _entryService = entryService;
             _emailHelper = new EmailHelper(_configuration);
         }
-        [UserIdAuthorize]
         public IActionResult Detail(int id, string? date)
         {
             var note = _noteService.GetNoteById(id);

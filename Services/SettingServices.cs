@@ -27,7 +27,7 @@ namespace NoteAppPWA.Services
 
         public async Task<LoginResponseViewModel> UpdateProfilePhoto(string id, string userName, IFormFile file)
         {
-            string token = _httpContextAccessor?.HttpContext?.Session.GetString("Token") ?? "";
+            string token = _httpContextAccessor?.HttpContext?.User.FindFirst("Token")?.Value ?? "";
             _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
             using var form = new MultipartFormDataContent();
@@ -56,7 +56,7 @@ namespace NoteAppPWA.Services
 
         public async Task<LoginResponseViewModel> UpdateFirstLast(UpdateViewModel request, string userName)
         {
-            string token = _httpContextAccessor?.HttpContext?.Session.GetString("Token") ?? "";
+            string token = _httpContextAccessor?.HttpContext?.User.FindFirst("Token")?.Value ?? "";
             _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
             var json = JsonConvert.SerializeObject(request);
@@ -80,7 +80,7 @@ namespace NoteAppPWA.Services
 
         public async Task<LoginResponseViewModel> UpdatePassword(UpdatePasswordViewModel request)
         {
-            string token = _httpContextAccessor?.HttpContext?.Session.GetString("Token") ?? "";
+            string token = _httpContextAccessor?.HttpContext?.User.FindFirst("Token")?.Value ?? "";
             _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
             var json = JsonConvert.SerializeObject(request);

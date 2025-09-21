@@ -1,6 +1,9 @@
 ﻿using ELAuth.Services;
 using ELAuth.ViewModel;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
 
 namespace NoteApp.Controllers
 {
@@ -34,17 +37,28 @@ namespace NoteApp.Controllers
                     });
                 }
 
-                // Simpan token ke session jika perlu
-                HttpContext.Session.SetString("Token", response.Data.Token ?? "");
-                HttpContext.Session.SetString("UserName", response.Data.UserName ?? "");
-                HttpContext.Session.SetString("Avatar", response.Data.ProfilePhoto ?? "");
-                HttpContext.Session.SetString("FullName", (response.Data.FirstName + " " + response.Data.LastName) ?? "");
-                HttpContext.Session.SetString("FirstName", response.Data.FirstName ?? "");
-                HttpContext.Session.SetString("LastName", response.Data.LastName ?? "");
-                HttpContext.Session.SetString("Email", response.Data.Email ?? "");
-                HttpContext.Session.SetString("ID", response.Data.Id.ToString() ?? "");
+                // 🟢 Simpan info user di cookie biasa (bisa dibaca JS/UI)
+                var claims = new List<Claim>
+                {
+                    new Claim("ID", response.Data.Id.ToString()),
+                    new Claim("FullName", $"{response.Data.FirstName} {response.Data.LastName}".ToString()),
+                    new Claim("FirstName", response.Data.FirstName),
+                    new Claim("LastName", response.Data.LastName),
+                    new Claim("Avatar", response.Data.ProfilePhoto ?? ""),
+                    new Claim("Token", response.Data.Token ?? ""),
+                    new Claim(ClaimTypes.Name, response.Data.UserName ?? ""),
+                    new Claim(ClaimTypes.Email, response.Data.Email ?? "")
+                };
 
 
+                var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
+                var principal = new ClaimsPrincipal(identity);
+
+                await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal, new AuthenticationProperties
+                {
+                    IsPersistent = true, // Ingat saya
+                    ExpiresUtc = DateTimeOffset.UtcNow.AddHours(1) // Sesuaikan dengan kebutuhan
+                });
 
                 // Kembalikan respons sukses
                 return Json(new
@@ -98,9 +112,11 @@ namespace NoteApp.Controllers
 
 
         [HttpPost]
-        public IActionResult Logout()
+        public async Task<IActionResult> Logout()
         {
             HttpContext.Session.Clear();
+            await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
 
             return RedirectToAction("Index", "Auth");
         }

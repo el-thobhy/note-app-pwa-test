@@ -1,7 +1,7 @@
 using ELAuth.Helper;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json.Linq;
-using NoteApp.Helper;
 using NoteApp.Models;
 using NoteApp.Services;
 using NoteAppPWA.Controllers;
@@ -101,7 +101,7 @@ namespace NoteApp.Controllers
         {
             if (ModelState.IsValid)
             {
-                string? userId = JwtHelper.GetName(Token);
+                string? userId = UserId;
                 note.Modified_by = userId; // Ganti sesuai user
                 _noteService.UpdateNote(note);
                 return RedirectToAction(nameof(Index));
@@ -110,7 +110,6 @@ namespace NoteApp.Controllers
         }
 
         // GET: /Home/Delete/5
-        [UserIdAuthorize]
         public IActionResult Delete(int id)
         {
             var note = _noteService.GetNoteById(id);
@@ -120,7 +119,6 @@ namespace NoteApp.Controllers
 
         // POST: /Home/Delete/5
         [HttpPost]
-        [UserIdAuthorize]
         public IActionResult DeleteConfirmed(int id)
         {
             string? userId = JwtHelper.GetName(Token);

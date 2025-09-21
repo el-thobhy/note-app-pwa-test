@@ -23,7 +23,7 @@ namespace NoteAppPWA.Controllers
         {
             try
             {
-                var id = HttpContext.Session.GetString("ID");
+                var id = User.FindFirst("ID")?.Value;
                 var result = await _settingServices.UpdateProfilePhoto(id,UserId, file);
                 // update session agar view pakai foto terbaru
                 if (result.Success)
@@ -63,7 +63,7 @@ namespace NoteAppPWA.Controllers
         {
             try
             {
-                request.Id = HttpContext.Session.GetString("ID");
+                request.Id = User.FindFirst("ID")?.Value;
                 var result = await _settingServices.UpdateFirstLast(request, UserId);
                 if (result.Success) { 
                     // update session agar view pakai foto terbaru

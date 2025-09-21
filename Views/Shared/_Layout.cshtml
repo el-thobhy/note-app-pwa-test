@@ -17,10 +17,9 @@
     {
         selectedDateStr = DateTime.Today.ToString("yyyy-MM-dd"); // fallback jika tidak ada date
     }
-    var userName = Context.Session.GetString("UserName") ?? "";
-    var profile = Context.Session.GetString("Avatar") ?? "";
-    var fullName = Context.Session.GetString("FullName") ?? "";
-    var role = Context.Session.GetString("Roles") ?? "";
+    var userName = User.Identity?.Name ?? "";
+    var profile = User?.FindFirst("Avatar")?.Value ?? "";
+    var fullName = User?.FindFirst("FullName")?.Value ?? "";
     string avatar = !string.IsNullOrEmpty(profile) ? profile : $"https://ui-avatars.com/api/?name={userName}&background=random&color=ffffff&size=32";
     var marginLeftStyle = !string.IsNullOrEmpty(userName) ? "margin-left: 220px;" : "margin-left: 0;";
     var marginLeftStyleFooter = !string.IsNullOrEmpty(userName) ? "padding-left:220px; background: #fff; z-index:9;" : "background: #fff; z-index:9;";

@@ -2,7 +2,7 @@
     ViewBag.Title = "Security";
     Layout = "~/Views/Shared/_Layout.cshtml";
 
-    var userName = Context.Session.GetString("UserName") ?? "";
+    var userName = User?.FindFirst("UserName")?.Value ?? "";
 }
 
 <style>
