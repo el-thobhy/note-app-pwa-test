@@ -1,7 +1,10 @@
 ﻿using Azure;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
 using NoteAppPWA.Models;
 using NoteAppPWA.Services;
+using System.Security.Claims;
 
 namespace NoteAppPWA.Controllers
 {
@@ -28,7 +31,24 @@ namespace NoteAppPWA.Controllers
                 // update session agar view pakai foto terbaru
                 if (result.Success)
                 {
-                    HttpContext.Session.SetString("Avatar", result.Data.ProfilePhoto);
+                    var identity = (ClaimsIdentity)User.Identity;
+
+                    // hapus claim lama Avatar
+                    var avatarClaim = identity.FindFirst("Avatar");
+                    if (avatarClaim != null)
+                        identity.RemoveClaim(avatarClaim);
+
+                    // tambah claim baru
+                    identity.AddClaim(new Claim("Avatar", result.Data.ProfilePhoto ?? ""));
+
+                    // re-issue cookie
+                    var principal = new ClaimsPrincipal(identity);
+                    await HttpContext.SignInAsync(
+                        CookieAuthenticationDefaults.AuthenticationScheme,
+                        principal,
+                        new AuthenticationProperties { IsPersistent = true }
+                    );
+
                     return Ok(new
                     {
                         success = true,
@@ -65,11 +85,32 @@ namespace NoteAppPWA.Controllers
             {
                 request.Id = User.FindFirst("ID")?.Value;
                 var result = await _settingServices.UpdateFirstLast(request, UserId);
-                if (result.Success) { 
-                    // update session agar view pakai foto terbaru
-                    HttpContext.Session.SetString("FirstName", result.Data.FirstName ?? "");
-                    HttpContext.Session.SetString("LastName", result.Data.LastName ?? "");
-                    HttpContext.Session.SetString("FullName", (result.Data.FirstName + " " + result.Data.LastName) ?? "");
+                if (result.Success) {
+                    // Ambil identity sekarang
+                    var identity = (ClaimsIdentity)User.Identity;
+
+                    // Hapus claim lama kalau ada
+                    var firstNameClaim = identity.FindFirst("FirstName");
+                    if (firstNameClaim != null) identity.RemoveClaim(firstNameClaim);
+
+                    var lastNameClaim = identity.FindFirst("LastName");
+                    if (lastNameClaim != null) identity.RemoveClaim(lastNameClaim);
+
+                    var fullNameClaim = identity.FindFirst("FullName");
+                    if (fullNameClaim != null) identity.RemoveClaim(fullNameClaim);
+
+                    // Tambahkan claim baru sesuai update
+                    identity.AddClaim(new Claim("FirstName", result.Data.FirstName ?? ""));
+                    identity.AddClaim(new Claim("LastName", result.Data.LastName ?? ""));
+                    identity.AddClaim(new Claim("FullName", (result.Data.FirstName + " " + result.Data.LastName) ?? ""));
+
+                    // Re-issue cookie agar perubahan tersimpan
+                    var principal = new ClaimsPrincipal(identity);
+                    await HttpContext.SignInAsync(
+                        CookieAuthenticationDefaults.AuthenticationScheme,
+                        principal,
+                        new AuthenticationProperties { IsPersistent = true }
+                    );
 
                     return Ok(new
                     {
