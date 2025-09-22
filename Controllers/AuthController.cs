@@ -57,7 +57,7 @@ namespace NoteApp.Controllers
                 await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal, new AuthenticationProperties
                 {
                     IsPersistent = true, // Ingat saya
-                    ExpiresUtc = DateTimeOffset.UtcNow.AddHours(1) // Sesuaikan dengan kebutuhan
+                    ExpiresUtc = DateTimeOffset.UtcNow.AddHours(60) // Sesuaikan dengan kebutuhan
                 });
 
                 // Kembalikan respons sukses
