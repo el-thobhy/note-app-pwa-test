@@ -1,6 +1,18 @@
 ﻿// Please see documentation at https://learn.microsoft.com/aspnet/core/client-side/bundling-and-minification
 // for details on configuring this project to bundle and minify static web assets.
 
+// set active item
+$(document).ready(function () {
+    const params = new URLSearchParams(window.location.search);
+    const selectedDate = params.get("date");
+
+    if(selectedDate){
+        $(".menu-item.list-item").removeClass("active open");
+        $(`.menu-item.list-item[data-date="${selectedDate}"]`).addClass("active open")
+    }    
+});
+
+
 // Write your JavaScript code.
 function openEditModalEntries(id) {
     $.get(`/Note/EditDate/${id}`, function (html) {
@@ -71,14 +83,4 @@ window.addEventListener("appinstalled", () => {
 document.addEventListener("DOMContentLoaded", () => {
     const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
     tooltipTriggerList.map(el => new bootstrap.Tooltip(el));
-});
-
-$(document).ready(function () {
-    const params = new URLSearchParams(window.location.search);
-    const selectedDate = params.get("date");
-
-    if(selectedDate){
-        $(".menu-item.list-item").removeClass("active open");
-        $(`.menu-item.list-item[data-date="${selectedDate}"]`).addClass("active open")
-    }    
 });
