@@ -105,6 +105,10 @@ namespace NoteApp.Controllers
 
                 try
                 {
+                    // ✅ Ambil atribut height & width (kalau ada)
+                    var originalWidth = imgNode.GetAttributeValue("width", "");
+                    var originalHeight = imgNode.GetAttributeValue("height", "");
+
                     var base64Data = src.Split(',')[1];
                     var imageBytes = Convert.FromBase64String(base64Data);
 
@@ -115,18 +119,14 @@ namespace NoteApp.Controllers
                         var yearMonth = $"Uploads/{DateTime.Now.Year}/{DateTime.Now.Month:D2}";
                         var filePath = Path.Combine(yearMonth, fileName);
 
-                        bool uploadSuccess = false;
-
                         try
                         {
                             await _fileHelper.UploadFileAsync(filePath, compressedStream);
-                            uploadSuccess = true;
                         }
                         catch (Exception azureEx)
                         {
                             System.Diagnostics.Debug.WriteLine($"Azure upload failed: {azureEx.Message}");
                         }
-
 
                         // Reset stream position for base64 encoding
                         compressedStream.Seek(0, SeekOrigin.Begin);
@@ -134,26 +134,25 @@ namespace NoteApp.Controllers
                         var base64Final = Convert.ToBase64String(finalBytes);
                         var mimeType = "image/jpeg"; // because we saved as jpg
                         var base64Src = $"data:{mimeType};base64,{base64Final}";
+
                         if (embedBase64InsteadOfUrl)
                         {
                             imgNode.SetAttributeValue("src", base64Src);
                         }
                         else
                         {
-                            // Gunakan URL jika bukan untuk header PDF
                             var baseUrl = $"{Request.Scheme}://{Request.Host}{Request.PathBase}";
                             var webPath = $"{baseUrl}/Note/ReadFileImageForTiny?filename={HttpUtility.UrlEncode(fileName)}&filePath={HttpUtility.UrlEncode(filePath)}";
-                            var onErrorHandler = $"this.onerror=null;this.src='{base64Src}'";
 
-                            //if (!(await IsImageUrlValidAsync(webPath)))
-                            //{
-                            //    imgNode.SetAttributeValue("src", base64Src);
-                            //}
-                            //else
-                            //{
-                                imgNode.SetAttributeValue("src", webPath);
-                            //}
+                            imgNode.SetAttributeValue("src", webPath);
                         }
+
+                        // ✅ Pasang kembali width & height kalau ada
+                        if (!string.IsNullOrEmpty(originalWidth))
+                            imgNode.SetAttributeValue("width", originalWidth);
+
+                        if (!string.IsNullOrEmpty(originalHeight))
+                            imgNode.SetAttributeValue("height", originalHeight);
                     }
                 }
                 catch (Exception ex)
