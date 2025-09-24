@@ -99,16 +99,12 @@ namespace NoteApp.Controllers
             {
                 var src = imgNode.GetAttributeValue("src", "");
 
-                // Skip if it's not a base64 image
+                // Skip jika bukan base64
                 if (!src.StartsWith("data:image"))
                     continue;
 
                 try
                 {
-                    // ✅ Ambil atribut height & width (kalau ada)
-                    var originalWidth = imgNode.GetAttributeValue("width", "");
-                    var originalHeight = imgNode.GetAttributeValue("height", "");
-
                     var base64Data = src.Split(',')[1];
                     var imageBytes = Convert.FromBase64String(base64Data);
 
@@ -128,31 +124,28 @@ namespace NoteApp.Controllers
                             System.Diagnostics.Debug.WriteLine($"Azure upload failed: {azureEx.Message}");
                         }
 
-                        // Reset stream position for base64 encoding
+                        // Reset posisi stream
                         compressedStream.Seek(0, SeekOrigin.Begin);
-                        var finalBytes = compressedStream.ToArray();
-                        var base64Final = Convert.ToBase64String(finalBytes);
-                        var mimeType = "image/jpeg"; // because we saved as jpg
-                        var base64Src = $"data:{mimeType};base64,{base64Final}";
 
-                        if (embedBase64InsteadOfUrl)
+                        // URL hasil upload
+                        var baseUrl = $"{Request.Scheme}://{Request.Host}{Request.PathBase}";
+                        var webPath = $"{baseUrl}/Note/ReadFileImageForTiny?filename={HttpUtility.UrlEncode(fileName)}&filePath={HttpUtility.UrlEncode(filePath)}";
+
+                        // 🔹 Tambahkan width & height dari style (jika ada)
+                        var style = imgNode.GetAttributeValue("style", "");
+                        if (!string.IsNullOrEmpty(style))
                         {
-                            imgNode.SetAttributeValue("src", base64Src);
+                            var widthMatch = System.Text.RegularExpressions.Regex.Match(style, @"width\s*:\s*(\d+)px");
+                            var heightMatch = System.Text.RegularExpressions.Regex.Match(style, @"height\s*:\s*(\d+)px");
+
+                            if (widthMatch.Success)
+                                imgNode.SetAttributeValue("width", widthMatch.Groups[1].Value);
+                            if (heightMatch.Success)
+                                imgNode.SetAttributeValue("height", heightMatch.Groups[1].Value);
                         }
-                        else
-                        {
-                            var baseUrl = $"{Request.Scheme}://{Request.Host}{Request.PathBase}";
-                            var webPath = $"{baseUrl}/Note/ReadFileImageForTiny?filename={HttpUtility.UrlEncode(fileName)}&filePath={HttpUtility.UrlEncode(filePath)}";
 
-                            imgNode.SetAttributeValue("src", webPath);
-                        }
-
-                        // ✅ Pasang kembali width & height kalau ada
-                        if (!string.IsNullOrEmpty(originalWidth))
-                            imgNode.SetAttributeValue("width", originalWidth);
-
-                        if (!string.IsNullOrEmpty(originalHeight))
-                            imgNode.SetAttributeValue("height", originalHeight);
+                        // Replace src dengan URL
+                        imgNode.SetAttributeValue("src", webPath);
                     }
                 }
                 catch (Exception ex)
@@ -162,7 +155,9 @@ namespace NoteApp.Controllers
                 }
             }
 
+
             return doc.DocumentNode.OuterHtml;
+
         }
 
         public static async Task<bool> IsImageUrlValidAsync(string imageUrl)
@@ -265,7 +260,7 @@ namespace NoteApp.Controllers
         {
             try
             {
-                _emailHelper.SendEmail(model);
+                _emailHelper.SendEmailWithLinkedImages(model);
                 return Json(new { success=true, message="Catatan berhasil dikirim" });
             }
             catch (Exception e)
