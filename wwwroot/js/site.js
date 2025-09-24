@@ -73,3 +73,12 @@ document.addEventListener("DOMContentLoaded", () => {
     tooltipTriggerList.map(el => new bootstrap.Tooltip(el));
 });
 
+$(document).ready(function () {
+    const params = new URLSearchParams(window.location.search);
+    const selectedDate = params.get("date");
+
+    if(selectedDate){
+        $(".menu-item.list-item").removeClass("active open");
+        $(`.menu-item.list-item[data-date="${selectedDate}"]`).addClass("active open")
+    }    
+});
