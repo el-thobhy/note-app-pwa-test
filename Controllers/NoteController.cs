@@ -100,8 +100,8 @@ namespace NoteApp.Controllers
                 var src = imgNode.GetAttributeValue("src", "");
 
                 // Skip if it's not a base64 image
-                //if (!src.StartsWith("data:image"))
-                //    continue;
+                if (!src.StartsWith("data:image"))
+                    continue;
 
                 try
                 {
@@ -198,20 +198,18 @@ namespace NoteApp.Controllers
                     mimeType = "application/octet-stream"; // fallback
                 }
 
-                Stream fileStream = null;
 
                 try
                 {
-                    // Coba baca dari Azure
-                    fileStream = _fileHelper.ReadFile(blobPath);
+                    Stream fileStream = _fileHelper.ReadFile(blobPath);
+                    return File(fileStream, mimeType);
                 }
                 catch (Exception azureEx)
                 {
                     System.Diagnostics.Debug.WriteLine($"Azure read failed: {azureEx.Message}");
-
+                    return Json(new { azureEx.Message });
                 }
 
-                return File(fileStream, mimeType);
             }
             catch (Exception ex)
             {
