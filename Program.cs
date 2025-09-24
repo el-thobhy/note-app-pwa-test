@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.Configuration.UserSecrets;
 using Microsoft.IdentityModel.Tokens;
 using NoteApp.Services;
 using NoteAppPWA.Helper;
@@ -26,6 +27,8 @@ builder.Services.AddSingleton<ISettingServices, SettingServices>();
 builder.Services.AddHttpClient();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<IEmailHelper, EmailHelper>();
+builder.Services.AddScoped<IFileHelper, FileHelper>();
+
 
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(options =>

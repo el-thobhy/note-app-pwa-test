@@ -1,10 +1,17 @@
 ﻿using ELAuth.Helper;
+using HtmlAgilityPack;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.StaticFiles;
 using NoteApp.Models;
 using NoteApp.Services;
 using NoteAppPWA.Controllers;
 using NoteAppPWA.Helper;
 using NoteAppPWA.Models;
+using System.Drawing;
+using System.Web;
+using static System.Net.Mime.MediaTypeNames;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace NoteApp.Controllers
@@ -14,14 +21,18 @@ namespace NoteApp.Controllers
         private readonly INoteService _noteService;
         private readonly IDailyEntryService _entryService;
         private readonly IEmailHelper _emailHelper;
+        private readonly IFileHelper _fileHelper;
         private readonly IConfiguration _configuration;
+        private readonly IWebHostEnvironment _env;
 
-        public NoteController(INoteService noteService, IDailyEntryService entryService, IConfiguration configuration)
+        public NoteController(INoteService noteService, IDailyEntryService entryService, IConfiguration configuration, IWebHostEnvironment env)
         {
             _configuration = configuration;
+            _env = env;
             _noteService = noteService;
             _entryService = entryService;
             _emailHelper = new EmailHelper(_configuration);
+            _fileHelper = new FileHelper(_configuration, _env);
         }
         public IActionResult Detail(int id, string? date)
         {
@@ -45,7 +56,7 @@ namespace NoteApp.Controllers
 
 
         [HttpGet]
-        public IActionResult GetDetailNote(string? id, string? date, string? noteId)
+        public async Task<IActionResult> GetDetailNote(string? id, string? date, string? noteId)
         {
             try
             {
@@ -63,6 +74,7 @@ namespace NoteApp.Controllers
 
                     }
                 }
+                entry.Content = await ProcessHtmlImagesWithAzure(entry.Content, embedBase64InsteadOfUrl: false);
                 return Json(new { success = true, message = "success get detail", data = entry });
             }
             catch (Exception e)
@@ -70,6 +82,143 @@ namespace NoteApp.Controllers
                 return Json(new { success = false, message = "failed get detail" });
             }
         }
+
+        private async Task<string> ProcessHtmlImagesWithAzure(string htmlContent, bool checkExisting = false, bool embedBase64InsteadOfUrl = false, bool isHeader = false)
+        {
+            if (string.IsNullOrEmpty(htmlContent))
+                return htmlContent;
+
+            var doc = new HtmlDocument();
+            doc.LoadHtml(htmlContent);
+            var imgNodes = doc.DocumentNode.SelectNodes("//img");
+
+            if (imgNodes == null)
+                return htmlContent;
+
+            foreach (var imgNode in imgNodes)
+            {
+                var src = imgNode.GetAttributeValue("src", "");
+
+                // Skip if it's not a base64 image
+                //if (!src.StartsWith("data:image"))
+                //    continue;
+
+                try
+                {
+                    var base64Data = src.Split(',')[1];
+                    var imageBytes = Convert.FromBase64String(base64Data);
+
+                    using (var ms = new MemoryStream(imageBytes))
+                    using (var compressedStream = FileHelper.SaveCompressedImageToStream(ms, 75))
+                    {
+                        var fileName = $"img_{Guid.NewGuid()}.jpg";
+                        var yearMonth = $"Uploads/{DateTime.Now.Year}/{DateTime.Now.Month:D2}";
+                        var filePath = Path.Combine(yearMonth, fileName);
+
+                        bool uploadSuccess = false;
+
+                        try
+                        {
+                            await _fileHelper.UploadFileAsync(filePath, compressedStream);
+                            uploadSuccess = true;
+                        }
+                        catch (Exception azureEx)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"Azure upload failed: {azureEx.Message}");
+                        }
+
+
+                        // Reset stream position for base64 encoding
+                        compressedStream.Seek(0, SeekOrigin.Begin);
+                        var finalBytes = compressedStream.ToArray();
+                        var base64Final = Convert.ToBase64String(finalBytes);
+                        var mimeType = "image/jpeg"; // because we saved as jpg
+                        var base64Src = $"data:{mimeType};base64,{base64Final}";
+                        if (embedBase64InsteadOfUrl)
+                        {
+                            imgNode.SetAttributeValue("src", base64Src);
+                        }
+                        else
+                        {
+                            // Gunakan URL jika bukan untuk header PDF
+                            var baseUrl = $"{Request.Scheme}://{Request.Host}{Request.PathBase}";
+                            var webPath = $"{baseUrl}/Note/ReadFileImageForTiny?filename={HttpUtility.UrlEncode(fileName)}&filePath={HttpUtility.UrlEncode(filePath)}";
+                            var onErrorHandler = $"this.onerror=null;this.src='{base64Src}'";
+
+                            //if (!(await IsImageUrlValidAsync(webPath)))
+                            //{
+                            //    imgNode.SetAttributeValue("src", base64Src);
+                            //}
+                            //else
+                            //{
+                                imgNode.SetAttributeValue("src", webPath);
+                            //}
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Error processing image: {ex.Message}");
+                    continue;
+                }
+            }
+
+            return doc.DocumentNode.OuterHtml;
+        }
+
+        public static async Task<bool> IsImageUrlValidAsync(string imageUrl)
+        {
+            try
+            {
+                using (var httpClient = new HttpClient())
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Head, imageUrl);
+                    var response = await httpClient.SendAsync(request);
+                    return response.IsSuccessStatusCode &&
+                           response.Content.Headers.ContentType?.MediaType.StartsWith("image/") == true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        [HttpGet]
+        [AllowAnonymous]
+        public IActionResult ReadFileImageForTiny(string filename, string filePath)
+        {
+            try
+            {
+                string blobPath = filePath;
+
+                // Dapatkan MIME type dari filename
+                var provider = new FileExtensionContentTypeProvider();
+                if (!provider.TryGetContentType(filename, out var mimeType))
+                {
+                    mimeType = "application/octet-stream"; // fallback
+                }
+
+                Stream fileStream = null;
+
+                try
+                {
+                    // Coba baca dari Azure
+                    fileStream = _fileHelper.ReadFile(blobPath);
+                }
+                catch (Exception azureEx)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Azure read failed: {azureEx.Message}");
+
+                }
+
+                return File(fileStream, mimeType);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"An error occurred: {ex.Message}");
+            }
+        }
+
 
         [HttpPost]
         [ValidateAntiForgeryToken]
