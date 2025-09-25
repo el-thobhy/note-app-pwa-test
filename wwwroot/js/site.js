@@ -12,7 +12,7 @@ document.addEventListener("DOMContentLoaded", function () {
     if (selectedDate) {
         listItems.forEach(li => {
             if (li.getAttribute("data-date") === selectedDate) {
-                li.classList.add("active", "open");
+                li.classList.add("active", "bg-label-primary");
             }
         });
     }
@@ -24,10 +24,10 @@ document.addEventListener("DOMContentLoaded", function () {
             const id = li.getAttribute("data-identry");
 
             // reset semua li
-            listItems.forEach(item => item.classList.remove("active", "open"));
+            listItems.forEach(item => item.classList.remove("active", "bg-label-primary"));
 
             // set active yang diklik
-            li.classList.add("active", "open");
+            li.classList.add("active", "bg-label-primary");
 
             // update querystring
             const params = new URLSearchParams(window.location.search);

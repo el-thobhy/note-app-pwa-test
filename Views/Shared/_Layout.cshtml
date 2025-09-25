@@ -154,7 +154,7 @@
                         <ul class="menu-inner py-1">
                             @foreach (var entry in entries)
                             {
-                                <li class="menu-item list-item @(entry.Date == selectedDateStr ? "open active": "")" data-identry="@entry.Id" data-date="@entry.Date">
+                                <li class="menu-item list-item @(entry.Date == selectedDateStr ? "active bg-label-primary": "")" data-identry="@entry.Id" data-date="@entry.Date">
                                  <div class="d-flex align-items-center">
                                     <a href="javascript:void(0)" data-id="@entry.Id" class="listDateSidebar menu-link d-flex align-items-center">
                                         <i class="menu-icon tf-icons bx bx-calendar"></i>
