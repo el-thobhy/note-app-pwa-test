@@ -107,9 +107,9 @@
 
         const url = new URL(window.location);
         var dateParam = url.searchParams.get("date");
-        var selectedDateVar = (dateParam !== null && dateParam !== "")
-            ? dateParam
-            : selectedDateVar;
+        var currentDate = localStorage.getItem("currentDate");
+        var selectedDateVar = currentDate != null ? currentDate : dateParam;
+        var latestOn = localStorage.getItem("latestOn");
 
         function loadDetail(id, selectedDate, modelId) {
             
@@ -394,7 +394,7 @@
 
 
         $(document).ready(function(){
-            loadDetail(entryId,selectedDateVar,modelId);
+            loadDetail(latestOn,selectedDateVar,modelId);
 
             //input email
             const $container = $("#tag-container");

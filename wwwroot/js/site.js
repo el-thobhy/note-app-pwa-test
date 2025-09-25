@@ -2,14 +2,40 @@
 // for details on configuring this project to bundle and minify static web assets.
 
 // set active item
-$(document).ready(function () {
+document.addEventListener("DOMContentLoaded", function () {
+    const listItems = document.querySelectorAll("li[data-date]");
+
+    // --- Auto set active saat reload sesuai query string ---
     const params = new URLSearchParams(window.location.search);
     const selectedDate = params.get("date");
 
-    if(selectedDate){
-        $(".menu-item.list-item").removeClass("active open");
-        $(`.menu-item.list-item[data-date="${selectedDate}"]`).addClass("active open")
-    }    
+    if (selectedDate) {
+        listItems.forEach(li => {
+            if (li.getAttribute("data-date") === selectedDate) {
+                li.classList.add("active", "open");
+            }
+        });
+    }
+
+    // --- Handle on click ---
+    listItems.forEach(li => {
+        li.addEventListener("click", function () {
+            const clickedDate = li.getAttribute("data-date");
+            const id = li.getAttribute("data-identry");
+
+            // reset semua li
+            listItems.forEach(item => item.classList.remove("active", "open"));
+
+            // set active yang diklik
+            li.classList.add("active", "open");
+
+            // update querystring
+            const params = new URLSearchParams(window.location.search);
+            params.set("date", clickedDate);
+            window.history.replaceState({}, "", `${location.pathname}?${params}`);
+            localStorage.setItem("latestOn", id);
+        });
+    });
 });
 
 
