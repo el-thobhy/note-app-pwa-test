@@ -253,8 +253,7 @@
                                   reject("Gagal upload: " + err.message);
                                 }
                               });
-                            }
-        ,
+                            },
                             setup: function (editor){
                                 //save all tiny
                                 let activeNotification = null;
@@ -365,9 +364,6 @@
                                 </button>
                             </div>
                         `);
-                        $("#noteDetailContainer").html(
-                            `<div class="alert alert-warning">${res.message}</div>`
-                        );
                     }
                 },
                 error: function () {
