@@ -79,7 +79,7 @@ namespace NoteApp.Controllers
             }
             catch (Exception e)
             {
-                return Json(new { success = false, message = "failed get detail" });
+                return Json(new { success = false, message = "failed get detail, " + e.Message.ToString() });
             }
         }
 
