@@ -356,6 +356,15 @@
                         });
 
                     } else {
+                       $("#noteDetailContainer").html(`
+                            <div class="misc-wrapper">
+                                <h1 class="mb-2 mx-2">Note is Empty</h1>
+                                <p class="mb-4 mx-2">You Can Create Note by button below</p>
+                                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addEntryModal">
+                                    <i class="bi bi-calendar-plus"></i>&nbsp; Entry Baru
+                                </button>
+                            </div>
+                        `);
                         $("#noteDetailContainer").html(
                             `<div class="alert alert-warning">${res.message}</div>`
                         );
