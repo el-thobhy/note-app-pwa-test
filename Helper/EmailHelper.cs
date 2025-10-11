@@ -45,12 +45,11 @@
             }
 
             string htmlBody = model.BodyMail;
-            var htmlView = AlternateView.CreateAlternateViewFromString(htmlBody, null, MediaTypeNames.Text.Html);
-
-            // 🔹 Cari semua <img src="..."> dari HTML
             var doc = new HtmlAgilityPack.HtmlDocument();
-            doc.LoadHtml(model.BodyMail);
+            doc.LoadHtml(htmlBody);
             var imgNodes = doc.DocumentNode.SelectNodes("//img[@src]");
+
+            var htmlView = AlternateView.CreateAlternateViewFromString(htmlBody, null, MediaTypeNames.Text.Html);
 
             if (imgNodes != null)
             {
@@ -59,42 +58,76 @@
 
                 foreach (var imgNode in imgNodes)
                 {
-                    var imgUrl = imgNode.GetAttributeValue("src", null);
-                    if (string.IsNullOrEmpty(imgUrl)) continue;
+                    var imgSrc = imgNode.GetAttributeValue("src", null);
+                    if (string.IsNullOrEmpty(imgSrc)) continue;
 
                     try
                     {
-                        // 🔹 Download gambar dari URL
-                        var imageBytes = await httpClient.GetByteArrayAsync(imgUrl);
+                        byte[] imageBytes;
+                        string mediaType = MediaTypeNames.Image.Jpeg;
+
+                        // ✅ CASE 1: Base64 inline image
+                        if (imgSrc.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Extract content type and base64 data
+                            var match = System.Text.RegularExpressions.Regex.Match(imgSrc, @"data:(image/\w+);base64,(.*)");
+                            if (match.Success)
+                            {
+                                mediaType = match.Groups[1].Value;
+                                imageBytes = Convert.FromBase64String(match.Groups[2].Value);
+                            }
+                            else continue;
+                        }
+                        // ✅ CASE 2: HTTP or HTTPS URL
+                        else if (imgSrc.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                        {
+                            imageBytes = await httpClient.GetByteArrayAsync(imgSrc);
+
+                            // Try to detect MIME type from extension
+                            string ext = Path.GetExtension(imgSrc).ToLower();
+                            mediaType = ext switch
+                            {
+                                ".png" => MediaTypeNames.Image.Jpeg.Replace("jpeg", "png"),
+                                ".gif" => MediaTypeNames.Image.Gif,
+                                _ => MediaTypeNames.Image.Jpeg
+                            };
+                        }
+                        else
+                        {
+                            continue; // Skip if unknown src
+                        }
+
+                        // Create stream from image bytes
                         var imageStream = new MemoryStream(imageBytes);
 
+                        // Create a unique CID
                         string cid = "img" + counter++;
-                        var linkedImage = new LinkedResource(imageStream, MediaTypeNames.Image.Jpeg)
+                        var linkedImage = new LinkedResource(imageStream, mediaType)
                         {
                             ContentId = cid,
                             TransferEncoding = TransferEncoding.Base64
                         };
 
+                        // Add the resource to the HTML view
                         htmlView.LinkedResources.Add(linkedImage);
 
-                        // 🔹 Replace src di HTML jadi cid:
-                        imgNode.SetAttributeValue("src", "cid:" + cid);
+                        // Replace the image source with cid reference
+                        imgNode.SetAttributeValue("src", $"cid:{cid}");
                     }
                     catch (Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine($"Gagal ambil gambar dari {imgUrl}: {ex.Message}");
+                        System.Diagnostics.Debug.WriteLine($"⚠️ Failed to process image {imgSrc}: {ex.Message}");
                     }
                 }
 
-                // Update htmlBody dengan <img src="cid:...">
+                // Update HTML after replacing src with cid:
                 htmlBody = doc.DocumentNode.OuterHtml;
                 htmlView = AlternateView.CreateAlternateViewFromString(htmlBody, null, MediaTypeNames.Text.Html);
             }
 
             mailMessage.AlternateViews.Add(htmlView);
 
-            smtpClient.Send(mailMessage);
-
+            await smtpClient.SendMailAsync(mailMessage);
         }
 
     }
