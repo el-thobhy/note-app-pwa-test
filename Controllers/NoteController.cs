@@ -25,14 +25,14 @@ namespace NoteApp.Controllers
         private readonly IConfiguration _configuration;
         private readonly IWebHostEnvironment _env;
 
-        public NoteController(INoteService noteService, IDailyEntryService entryService, IConfiguration configuration, IWebHostEnvironment env, IHttpContextAccessor httpContextAccessor)
+        public NoteController(INoteService noteService, IDailyEntryService entryService, IConfiguration configuration, IWebHostEnvironment env, IHttpContextAccessor httpContextAccessor, IFileHelper fileHelper)
         {
             _configuration = configuration;
             _env = env;
             _noteService = noteService;
             _entryService = entryService;
-            _emailHelper = new EmailHelper(_configuration, httpContextAccessor);
             _fileHelper = new FileHelper(_configuration, _env);
+            _emailHelper = new EmailHelper(_configuration, _env, httpContextAccessor);
         }
         public IActionResult Detail(int id, string? date)
         {
