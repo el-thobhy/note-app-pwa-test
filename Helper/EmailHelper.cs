@@ -1,5 +1,7 @@
 ﻿namespace NoteAppPWA.Helper
 {
+    using Azure.Core;
+    using Microsoft.AspNetCore.Http;
     using Microsoft.Extensions.Configuration;
     using NoteAppPWA.Models;
     using SixLabors.ImageSharp;
@@ -15,10 +17,11 @@
     public class EmailHelper : IEmailHelper
     {
         private readonly IConfiguration _configuration;
-
-        public EmailHelper(IConfiguration configuration)
+        private readonly IHttpContextAccessor _httpContextAccessor;
+        public EmailHelper(IConfiguration configuration, IHttpContextAccessor httpContextAccessor)
         {
             _configuration = configuration;
+            _httpContextAccessor = httpContextAccessor;
         }
         public async Task SendEmailWithLinkedImages(ShareEmailModel model)
         {
@@ -44,83 +47,76 @@
                     mailMessage.To.Add(mailTo);
             }
 
+            // Base HTML
             string htmlBody = model.BodyMail;
-            var doc = new HtmlAgilityPack.HtmlDocument();
-            doc.LoadHtml(htmlBody);
-            var imgNodes = doc.DocumentNode.SelectNodes("//img[@src]");
-
             var htmlView = AlternateView.CreateAlternateViewFromString(htmlBody, null, MediaTypeNames.Text.Html);
+
+            // Parse <img> tags
+            var doc = new HtmlAgilityPack.HtmlDocument();
+            doc.LoadHtml(model.BodyMail);
+            var imgNodes = doc.DocumentNode.SelectNodes("//img[@src]");
 
             if (imgNodes != null)
             {
                 int counter = 1;
                 using var httpClient = new HttpClient();
 
+                // Get base URL (ASP.NET Core)
+                var request = _httpContextAccessor.HttpContext.Request;
+                var baseUrl = $"{request.Scheme}://{request.Host}";
+
                 foreach (var imgNode in imgNodes)
                 {
                     var imgSrc = imgNode.GetAttributeValue("src", null);
-                    if (string.IsNullOrEmpty(imgSrc)) continue;
+                    if (string.IsNullOrEmpty(imgSrc))
+                        continue;
 
                     try
                     {
                         byte[] imageBytes;
-                        string mediaType = MediaTypeNames.Image.Jpeg;
 
-                        // ✅ CASE 1: Base64 inline image
-                        if (imgSrc.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
+                        // 🔹 CASE 1: Base64 inline image (data:image/jpeg;base64,...)
+                        if (imgSrc.StartsWith("data:image", StringComparison.OrdinalIgnoreCase))
                         {
-                            // Extract content type and base64 data
-                            var match = System.Text.RegularExpressions.Regex.Match(imgSrc, @"data:(image/\w+);base64,(.*)");
-                            if (match.Success)
-                            {
-                                mediaType = match.Groups[1].Value;
-                                imageBytes = Convert.FromBase64String(match.Groups[2].Value);
-                            }
-                            else continue;
-                        }
-                        // ✅ CASE 2: HTTP or HTTPS URL
-                        else if (imgSrc.StartsWith("http", StringComparison.OrdinalIgnoreCase))
-                        {
-                            imageBytes = await httpClient.GetByteArrayAsync(imgSrc);
-
-                            // Try to detect MIME type from extension
-                            string ext = Path.GetExtension(imgSrc).ToLower();
-                            mediaType = ext switch
-                            {
-                                ".png" => MediaTypeNames.Image.Jpeg.Replace("jpeg", "png"),
-                                ".gif" => MediaTypeNames.Image.Gif,
-                                _ => MediaTypeNames.Image.Jpeg
-                            };
+                            var base64Data = imgSrc.Substring(imgSrc.IndexOf(",") + 1);
+                            imageBytes = Convert.FromBase64String(base64Data);
                         }
                         else
                         {
-                            continue; // Skip if unknown src
+                            // 🔹 CASE 2: Relative path (no scheme)
+                            if (!Uri.TryCreate(imgSrc, UriKind.Absolute, out Uri? imgUri))
+                            {
+                                // Append base URL
+                                if (!imgSrc.StartsWith("/")) imgSrc = "/" + imgSrc;
+                                imgSrc = baseUrl + imgSrc;
+                            }
+
+                            // 🔹 Download from URL
+                            imageBytes = await httpClient.GetByteArrayAsync(imgSrc);
                         }
 
-                        // Create stream from image bytes
-                        var imageStream = new MemoryStream(imageBytes);
-
-                        // Create a unique CID
+                        // 🔹 Convert to linked CID resource
+                        using var imageStream = new MemoryStream(imageBytes);
                         string cid = "img" + counter++;
-                        var linkedImage = new LinkedResource(imageStream, mediaType)
+
+                        var linkedImage = new LinkedResource(imageStream)
                         {
                             ContentId = cid,
                             TransferEncoding = TransferEncoding.Base64
                         };
 
-                        // Add the resource to the HTML view
                         htmlView.LinkedResources.Add(linkedImage);
 
-                        // Replace the image source with cid reference
-                        imgNode.SetAttributeValue("src", $"cid:{cid}");
+                        // Replace <img src="..."> with <img src="cid:...">
+                        imgNode.SetAttributeValue("src", "cid:" + cid);
                     }
                     catch (Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine($"⚠️ Failed to process image {imgSrc}: {ex.Message}");
+                        Console.WriteLine($"⚠️ Failed to process image {imgSrc}: {ex.Message}");
                     }
                 }
 
-                // Update HTML after replacing src with cid:
+                // Update HTML body with CID references
                 htmlBody = doc.DocumentNode.OuterHtml;
                 htmlView = AlternateView.CreateAlternateViewFromString(htmlBody, null, MediaTypeNames.Text.Html);
             }
@@ -129,6 +125,7 @@
 
             await smtpClient.SendMailAsync(mailMessage);
         }
+
 
     }
 }
