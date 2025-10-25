@@ -158,6 +158,10 @@
                     type: 'POST',
                     url: '/Auth/SigningIn',
                     contentType: 'application/json',
+                    crossDomain: true,
+                    xhrFields: {
+                        withCredentials: true // 🔥 required to send/store cookies
+                    },
                     data: JSON.stringify(formData),
                     headers: {
                         'RequestVerificationToken': token,
