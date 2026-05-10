@@ -4,6 +4,10 @@
     DateTime selectedDate = ViewBag.SelectedDate;
     var entry = ViewBag.Entry as NoteApp.Models.DailyEntry;
     ViewData["Title"] = "Detail";
+
+    var collabDisplayName = User?.FindFirst("FullName")?.Value ?? User?.Identity?.Name ?? "Guest";
+    var collabAvatar = User?.FindFirst("Avatar")?.Value ?? "";
+    var collabUserColor = ViewBag.UserColor as string ?? "#607d8b";
 }
 <style>
     .flatpickr-input {
@@ -42,6 +46,14 @@
 
 <div id="noteDetailContainer">
     <!-- AJAX akan inject form di sini -->
+</div>
+
+<!-- Collaboration Bar (muncul saat entry dimuat) -->
+<div id="collabBar" class="collab-bar d-none">
+    <div id="collab-users" class="collab-users"></div>
+    <span id="collab-count" class="collab-count ms-2">Hanya kamu</span>
+    <div id="collab-typing-indicators" class="ms-2"></div>
+    <span class="ms-auto" id="collab-status" class="collab-status-text text-muted">● Connecting...</span>
 </div>
 
 
@@ -105,11 +117,41 @@
         var modelId = "@Model.Id";
         var entryId = "";
 
+        // Collaboration config (dari server-side claims)
+        var collabDisplayName = "@collabDisplayName";
+        var collabAvatar = "@collabAvatar";
+        var collabUserColor = "@collabUserColor";
+        var collabClient = null; // instance CollaborationClient aktif
+
         const url = new URL(window.location);
         var dateParam = url.searchParams.get("date");
         var currentDate = localStorage.getItem("currentDate");
         var selectedDateVar = currentDate != null ? currentDate : dateParam;
         var latestOn = localStorage.getItem("latestOn");
+
+        function applyEditorColor(color) {
+            const container = document.querySelector('.tox-tinymce');
+            if (container) {
+                container.style.borderColor = color;
+                container.style.borderWidth = '2px';
+                container.style.boxShadow = `0 0 0 3px ${color}33`;
+                container.style.borderRadius = '6px';
+            }
+            try {
+                const iframe = document.querySelector('.tox-edit-area__iframe');
+                if (iframe && iframe.contentDocument) {
+                    const old = iframe.contentDocument.getElementById('collab-cursor-style');
+                    if (old) old.remove();
+                    const style = iframe.contentDocument.createElement('style');
+                    style.id = 'collab-cursor-style';
+                    style.textContent = `
+                        body { caret-color: ${color} !important; }
+                        ::selection { background: ${color}44 !important; }
+                    `;
+                    iframe.contentDocument.head.appendChild(style);
+                }
+            } catch (e) {}
+        }
 
         function loadDetail(id, selectedDate, modelId) {
             
@@ -255,9 +297,9 @@
                               });
                             },
                             setup: function (editor){
-                                //save all tiny
                                 let activeNotification = null;
                                 let handleSave = null;
+                                let collabDebounce = null;
 
                                 handleSave = function () {
                                     const $btn = $("#submitBtn");
@@ -270,12 +312,11 @@
                                     const isEdit = $("input[name='Id']").length > 0;
                                     const url = isEdit ? "/Note/UpdateEntry" : "/Note/AddEntry";
 
-                                    // ⏳ Tampilkan notifikasi loading
                                     const loadingNotification = editor.notificationManager.open({
-                                        text: 'Saving document... <i class="fas fa-spinner fa-spin"></i>',
+                                        text: 'Saving document...',
                                         type: 'info',
                                         closeButton: false,
-                                        timeout: 0 // notifikasi tidak akan hilang otomatis
+                                        timeout: 0
                                     });
 
                                     $.ajax({
@@ -296,8 +337,6 @@
                                         },
                                         success: function (response) {
                                             loadingNotification.close();
-
-                                            // ✅ Tampilkan hasil sukses/gagal
                                             activeNotification = editor.notificationManager.open({
                                                 text: response.message || 'Document saved',
                                                 type: 'info',
@@ -310,8 +349,7 @@
                                             alert("Terjadi kesalahan saat menyimpan.");
                                         }
                                     });
-                                }
-
+                                };
 
                                 editor.ui.registry.addButton('saveButton', {
                                     text: 'Save Page',
@@ -319,14 +357,11 @@
                                     onAction: handleSave
                                 });
 
-                                // 🎹 Shortcut Ctrl+S → panggil saveButton
                                 editor.addShortcut("ctrl+s", "Save Content", function () {
-                                  // ambil definisi tombol lalu jalankan onAction
-                                  handleSave();
-                                  return false; // cegah browser save page
+                                    handleSave();
+                                    return false;
                                 });
 
-                                // ✅ Tutup notifikasi kalau ada perubahan
                                 editor.on('Change Input NodeChange KeyUp Paste Undo Redo', function () {
                                     if (activeNotification) {
                                         activeNotification.close();
@@ -334,7 +369,38 @@
                                     }
                                 });
 
+                                // ── Collaboration: broadcast perubahan ke peers ──
+                                editor.on('Change KeyUp Paste Undo Redo', function () {
+                                    if (collabClient && !collabClient._applyingRemote) {
+                                        clearTimeout(collabDebounce);
+                                        collabDebounce = setTimeout(function () {
+                                            collabClient.sendContentUpdate(editor.getContent());
+                                        }, 300);
+                                    }
+                                });
 
+                                // ── Init collaboration setelah editor siap ──
+                                editor.on('init', function () {
+                                    const currentEntryId = $("input[name='Id']").val();
+                                    if (!currentEntryId) return;
+
+                                    if (collabClient) {
+                                        collabClient.destroy();
+                                        collabClient = null;
+                                    }
+
+                                    $("#collabBar").removeClass("d-none");
+
+                                    collabClient = new CollaborationClient(
+                                        currentEntryId,
+                                        collabDisplayName,
+                                        collabAvatar
+                                    );
+                                    collabClient.init(editor);
+
+                                    // Apply warna cursor dari username
+                                    applyEditorColor(collabUserColor);
+                                });
                             }
                         });
 
@@ -395,9 +461,16 @@
         }
 
         $(".listDateSidebar").on("click", function () {
-            entryId = $(this).data("id"); // ambil nilai data-id
+            entryId = $(this).data("id");
 
-            loadDetail(entryId,selectedDateVar,modelId);
+            // Destroy collaboration session lama sebelum load entry baru
+            if (collabClient) {
+                collabClient.destroy();
+                collabClient = null;
+            }
+            $("#collabBar").addClass("d-none");
+
+            loadDetail(entryId, selectedDateVar, modelId);
         });
 
 
@@ -567,4 +640,9 @@
         });
 
     </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/yjs@13.6.18/dist/yjs.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@@microsoft/signalr@8.0.7/dist/browser/signalr.min.js"></script>
+    <script src="~/js/collaboration.js"></script>
+    <link rel="stylesheet" href="~/css/collaboration.css" />
 }

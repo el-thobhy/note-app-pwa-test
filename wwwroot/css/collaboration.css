@@ -1,0 +1,74 @@
+/* ── Collaboration Bar ─────────────────────────────────────────── */
+.collab-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    margin-bottom: 10px;
+    font-size: 0.82rem;
+    flex-wrap: wrap;
+}
+
+.collab-users {
+    display: flex;
+    align-items: center;
+}
+
+.collab-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 2px solid #fff;
+    overflow: hidden;
+    margin-left: -6px;
+    cursor: default;
+    box-shadow: 0 1px 3px rgba(0,0,0,.2);
+    transition: transform .15s;
+    outline-offset: 1px;
+}
+
+.collab-avatar:first-child { margin-left: 0; }
+.collab-avatar:hover { transform: scale(1.15); z-index: 10; }
+
+.collab-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.collab-avatar span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    color: #fff;
+    font-size: 0.65rem;
+    font-weight: 700;
+}
+
+.collab-status-text { font-size: 0.75rem; font-weight: 500; }
+.collab-count { color: #6c757d; font-size: 0.78rem; }
+
+/* ── Typing indicators ─────────────────────────────────────────── */
+#collab-typing-indicators {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-height: 24px;
+    align-items: center;
+    padding: 4px 0;
+}
+
+@keyframes collab-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* ── TinyMCE border warna user ─────────────────────────────────── */
+.tox-tinymce {
+    transition: border-color 0.3s, box-shadow 0.3s;
+}

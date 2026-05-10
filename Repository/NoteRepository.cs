@@ -1,4 +1,5 @@
 ﻿using Microsoft.Data.SqlClient;
+using NoteApp.Helper;
 using NoteApp.Models;
 using System.Data;
 
@@ -21,6 +22,9 @@ namespace NoteApp.Repository
             command.Parameters.AddWithValue("@Title", note.Title);
             command.Parameters.AddWithValue("@UserId", note.UserId);
             command.Parameters.AddWithValue("@Created_by", note.Created_by ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@IsPublic", note.IsPublic);
+            command.Parameters.AddWithValue("@ClientName", (object)DBNull.Value);
+            command.Parameters.AddWithValue("@LocationOfProject", (object)DBNull.Value);
 
             command.ExecuteNonQuery();
         }
@@ -95,8 +99,22 @@ namespace NoteApp.Repository
             command.Parameters.AddWithValue("@Id", note.Id);
             command.Parameters.AddWithValue("@Title", note.Title);
             command.Parameters.AddWithValue("@Modified_by", note.Modified_by ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@IsPublic", note.IsPublic);
 
             command.ExecuteNonQuery();
+        }
+
+        public List<Note> GetAllPublic()
+        {
+            using var command = CreateCommand("get_all_public");
+
+            using var reader = command.ExecuteReader();
+            List<Note> result = new List<Note>();
+            while (reader.Read())
+            {
+                result.Add(MapNote(reader));
+            }
+            return result;
         }
 
         public void Delete(int id, string? deletedBy)
@@ -120,12 +138,12 @@ namespace NoteApp.Repository
 
         private Note MapNote(SqlDataReader reader)
         {
-            int id = Convert.ToInt32(reader["Id"].ToString());
             return new Note
             {
-                Id = reader["Id"] .ToString(),
+                Id = reader["Id"].ToString(),
                 Title = reader["Title"] as string,
                 UserId = reader["UserId"] as string,
+                IsPublic = reader.HasColumn("IsPublic") && reader["IsPublic"] != DBNull.Value && Convert.ToBoolean(reader["IsPublic"]),
                 Created_by = reader["Created_by"] as string,
                 Created_on = Convert.ToDateTime(reader["Created_on"] as string),
                 Modified_by = reader["Modified_by"] as string,

@@ -3,6 +3,7 @@ using ELAuth.ViewModel;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
+using NoteApp.Models;
 using System.Security.Claims;
 
 namespace NoteApp.Controllers
@@ -110,6 +111,43 @@ namespace NoteApp.Controllers
             return BadRequest("Gagal mengirim OTP. Periksa email Anda.");
         }
 
+
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public async Task<IActionResult> LoginAsGuest([FromBody] GuestLoginViewModel model)
+        {
+            if (string.IsNullOrWhiteSpace(model?.DisplayName))
+            {
+                return Json(new { success = false, message = "Display name is required." });
+            }
+
+            var guestId = Guid.NewGuid().ToString();
+
+            var claims = new List<Claim>
+            {
+                new Claim("ID", guestId),
+                new Claim("FullName", model.DisplayName),
+                new Claim("FirstName", model.DisplayName),
+                new Claim("LastName", ""),
+                new Claim("Avatar", ""),
+                new Claim("Token", ""),
+                new Claim("IsGuest", "true"),
+                new Claim(ClaimTypes.Name, $"guest_{guestId}"),
+                new Claim(ClaimTypes.Email, ""),
+                new Claim(ClaimTypes.Role, "Guest") // Tambahkan klaim peran untuk membedakan guest
+            };
+
+            var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
+            var principal = new ClaimsPrincipal(identity);
+
+            await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal, new AuthenticationProperties
+            {
+                IsPersistent = false,
+                ExpiresUtc = DateTimeOffset.UtcNow.AddHours(3)
+            });
+
+            return Json(new { success = true, message = $"Welcome, {model.DisplayName}!" });
+        }
 
         [HttpPost]
         public async Task<IActionResult> Logout()

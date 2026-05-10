@@ -75,6 +75,7 @@
     <link rel="stylesheet" href="../../frest/assets/vendor/libs/perfect-scrollbar/perfect-scrollbar.css" />
     <link rel="stylesheet" href="../../frest/assets/vendor/libs/typeahead-js/typeahead.css" />
     <link rel="stylesheet" href="../../frest/assets/vendor/libs/apex-charts/apex-charts.css" />
+    <link rel="stylesheet" href="../../frest/assets/vendor/libs/select2/select2.css" />
     <link rel="stylesheet" href="../../frest/assets/vendor/libs/datatables-bs5/datatables.bootstrap5.css" />
     <link rel="stylesheet" href="../../frest/assets/vendor/libs/datatables-responsive-bs5/responsive.bootstrap5.css" />
     <link rel="stylesheet" href="../../frest/assets/vendor/libs/flatpickr/flatpickr.css" />
@@ -82,6 +83,7 @@
     <!-- Page CSS -->
     <link rel="stylesheet" href="../../frest/assets/vendor/css/pages/app-logistics-dashboard.css" />
     <link rel="stylesheet" href="~/css/site.css" />
+    <link rel="stylesheet" href="~/css/collaboration.css" />
     <!-- Helpers -->
     <script src="../../frest/assets/vendor/js/helpers.js"></script>
 
@@ -186,14 +188,25 @@
                     }
                     else
                     {
-                        <ul class="menu-inner flex-column">                 
-                            <li class="menu-item active">
-                                <a class="menu-link px-3 py-2 rounded-2"
-                                    href="/">
-                                    <i class="menu-icon tf-icons bi bi-house-door me-2"></i> Home
+                        <ul class="menu-inner flex-column">          
+                            <!-- Dashboards -->
+                            <li class="menu-item open">
+                                <a href="javascript:void(0);" class="menu-link menu-toggle">
+                                    <i class="menu-icon tf-icons bx bx-home-circle"></i>
+                                    <div data-i18n="Dashboards">Dashboards</div>
+                                    <div class="badge bg-primary rounded-pill ms-auto">2</div>
                                 </a>
+                                <ul class="menu-sub">
+                                    <li class="menu-item">
+                                        <a class="menu-link"
+                                           href="/">
+                                            <div data-i18n="Notes"> Note</div>
+                                        </a>
+                                    </li>
+                                </ul>
                             </li>
                         </ul>
+
                     }
                 </aside>
             }
@@ -242,6 +255,13 @@
                                         </a>
                                     </li>
                                     <!-- install PWA -->
+                                    <!-- Collaboration Rooms link -->
+                                    <li class="nav-item me-2 me-xl-0">
+                                        <a class="nav-link d-flex align-items-center" href="/Collaboration" data-bs-toggle="tooltip" title="Collaboration Rooms">
+                                            <i class="bi bi-people-fill text-success"></i>
+                                            <span class="ms-1 d-none d-md-inline">Rooms</span>
+                                        </a>
+                                    </li>
 
                                     <!-- Style Switcher -->
                                     <li class="nav-item me-2 me-xl-0">
@@ -340,9 +360,33 @@
         <!-- Drag Target Area To SlideIn Menu On Small Screens -->
         <div class="drag-target"></div>
     </div>
-    <!-- Modals -->
-    <div id="modalContainer">
-        @await Html.PartialAsync("_NoteModals", new Note())
+    <!-- Modal entries untuk Note/Detail sidebar -->
+    <div class="modal fade" id="editModalEntries" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div id="editModalContentEntries" class="modal-content border-0 rounded-4 shadow-sm"></div>
+        </div>
+    </div>
+    <div class="modal fade" id="deleteModalEntries" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <form id="deleteNoteFormEntries" class="modal-content border-0 rounded-4 shadow-sm">
+                <div class="modal-header border-0 pb-0">
+                    <h5 class="modal-title fw-semibold"><i class="bi bi-trash-fill me-2"></i>Hapus Entry</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Yakin ingin menghapus entry <strong id="deleteNoteTitleEntries" class="text-danger"></strong>?</p>
+                    <input type="hidden" id="deleteNoteIdEntries" name="id" />
+                </div>
+                <div class="modal-footer border-0 pt-0">
+                    <button type="submit" id="deleteBtnEntries" class="btn btn-danger rounded-pill">
+                        <i class="bi bi-trash me-1"></i>Ya, Hapus
+                    </button>
+                    <button type="button" class="btn btn-secondary rounded-pill" data-bs-dismiss="modal">
+                        <i class="bi bi-x-circle me-1"></i>Batal
+                    </button>
+                </div>
+            </form>
+        </div>
     </div>
     <!-- / Layout wrapper -->
     <!-- Core JS -->
@@ -360,6 +404,7 @@
     <script src="../../frest/assets/vendor/js/menu.js"></script>
     <!-- endbuild -->
     <!-- Vendors JS -->
+    <script src="../../frest/assets/vendor/libs/select2/select2.js"></script>
     <script src="../../frest/assets/vendor/libs/apex-charts/apexcharts.js"></script>
     <script src="../../frest/assets/vendor/libs/flatpickr/flatpickr.js"></script>
     <script src="../../frest/assets/vendor/libs/moment/moment.js"></script>
@@ -379,7 +424,14 @@
         setTimeout(function(){
             $("#sessionModal").modal('show');
         }, sessionTimeout - 5000);
+
+        $(".select2").select2();
     </script>
+
+    <!-- Collaboration libs (load sebelum Scripts section) -->
+    <script src="~/js/signalr.min.js"></script>
+    <script src="~/js/collaboration.js"></script>
+
     @await RenderSectionAsync("Scripts", required: false)
 </body>
 </html>

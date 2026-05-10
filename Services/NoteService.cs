@@ -62,6 +62,16 @@ namespace NoteApp.Services
             return repo.GetEntriesByNoteId(noteId) ?? [];
         }
 
+        public List<Note> GetAllPublicNotes()
+        {
+            using var connection = new SqlConnection(_connectionString);
+            connection.Open();
+            using var transaction = connection.BeginTransaction();
+
+            var repo = new NoteRepository(connection, transaction);
+            return repo.GetAllPublic();
+        }
+
         public Note? GetNoteById(int id)
         {
             using var connection = new SqlConnection(_connectionString);

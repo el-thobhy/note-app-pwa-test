@@ -75,14 +75,10 @@ namespace NoteApp.Controllers
         [ValidateAntiForgeryToken]
         public IActionResult Create(Note note)
         {
-            if (ModelState.IsValid)
-            {
-                note.Created_by = UserId; // Bisa ganti dengan user login
-                note.UserId = UserId; // Bisa ganti dengan user login
-                _noteService.CreateNote(note);
-                return RedirectToAction(nameof(Index));
-            }
-            return View(note);
+            note.Created_by = UserId;
+            note.UserId = UserId;
+            _noteService.CreateNote(note);
+            return RedirectToAction(nameof(Index));
         }
 
         // GET: /Home/Edit/5
