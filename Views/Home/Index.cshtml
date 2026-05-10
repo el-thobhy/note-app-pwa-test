@@ -91,23 +91,33 @@
     <script>
         // CREATE Note
         $("#createNoteForm").submit(function (e) {
+            e.preventDefault();
 
             const $btn = $("#saveNote");
             const originalHtml = $btn.html();
             $btn.prop("disabled", true).html(`<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Menyimpan...`);
 
             var token = $('input[name="__RequestVerificationToken"]').val();
-            e.preventDefault();
+            var isPublic = $('#isPublicToggle').is(':checked');
+            var title = $('#createNoteForm input[name="Title"]').val();
+
+            console.log('IsPublic:', isPublic, 'Title:', title); // debug
+
             $.ajax({
                 type: "POST",
                 url: "/Home/Create",
-                data: $(this).serialize(),
-                headers: {
-                    'RequestVerificationToken': token
+                data: {
+                    Title: title,
+                    IsPublic: isPublic,
+                    __RequestVerificationToken: token
                 },
                 success: function () {
                     $("#createModal").modal('hide');
+                    $('#isPublicToggle').prop('checked', false); // reset toggle
                     location.reload();
+                },
+                error: function () {
+                    $btn.prop("disabled", false).html(originalHtml);
                 }
             });
         });
@@ -176,19 +186,34 @@
                 }
 
                 response.data.forEach(note => {
+                    const publicBadge = note.isPublic
+                        ? `<span class="badge bg-label-success rounded-pill ms-1" title="Public Room">
+                               <i class="bi bi-people me-1"></i>Public
+                           </span>`
+                        : '';
+                    const roomLink = note.isPublic
+                        ? `<span class="text-success ps-2"
+                                  onclick="event.stopPropagation(); window.location.href='/Collaboration/Room?noteId=${note.id}';"
+                                  title="Buka Collaboration Room">
+                               <i class="bi bi-people-fill"></i>
+                           </span>`
+                        : '';
+
                     container.append(`
                           <div class="col-sm-6 col-lg-4 mb-4 cursor-pointer">
                             <div class="card card-border-shadow-primary h-100"
                                  onclick="window.location.href='/Note/Detail?id=${note.id}'">
                                 <div class="card-body">
                                     <div class="d-flex align-items-center justify-content-between mb-2 pb-1">
-                                        <div class="d-flex">
+                                        <div class="d-flex align-items-center">
                                             <div class="avatar me-2">
                                                 <span class="avatar-initial rounded bg-label-primary"><i class="bx bxs-playlist"></i></span>
                                             </div>
                                             <h4 class="ms-1 mb-0 text-nowrap px-3">${note.entries.length} entry</h4>
+                                            ${publicBadge}
                                         </div>
                                         <p class="mb-0 px-2">
+                                            ${roomLink}
                                             <span class="text-warning ps-2"
                                                     onclick="event.stopPropagation(); openEditModal(${note.id});">
                                                 <i class="bi bi-pencil-square"></i>
@@ -199,11 +224,10 @@
                                             </span>
                                         </p>
                                     </div>
-                                    <p class="mb-1"> ${note.title}</p>
+                                    <p class="mb-1">${note.title}</p>
                                 </div>
                             </div>
                         </div>
-
                     `);
                 });
 

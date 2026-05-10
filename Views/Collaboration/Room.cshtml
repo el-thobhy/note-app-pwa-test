@@ -1,0 +1,463 @@
+@model NoteApp.Models.Note
+@inject NoteApp.Services.IDailyEntryService _entryService
+@{
+    ViewData["Title"] = "Room - " + ViewBag.NoteTitle;
+    bool isGuest = ViewBag.IsGuest == true;
+    string displayName = ViewBag.DisplayName ?? "Guest";
+    string avatar = ViewBag.Avatar ?? "";
+    string userColor = ViewBag.UserColor ?? "#607d8b";
+}
+
+<style>
+    .flatpickr-input { font-size: 0.85rem; padding: 0.25rem 0.5rem; height: 30px; }
+    .guest-badge { font-size: 0.75rem; }
+</style>
+
+<!-- Room Header -->
+<div class="d-flex align-items-center justify-content-between mb-3">
+    @Html.AntiForgeryToken()
+    <div class="d-flex align-items-center gap-2">
+        <a href="/Collaboration" class="btn btn-outline-secondary btn-sm rounded-pill">
+            <i class="bi bi-arrow-left me-1"></i> Rooms
+        </a>
+        <h5 class="mb-0 fw-bold"><i class="bi bi-people me-2 text-success"></i>@ViewBag.NoteTitle</h5>
+        <span class="badge bg-label-success rounded-pill">Public Room</span>
+        @if (isGuest)
+        {
+            <span class="badge bg-label-warning rounded-pill guest-badge">
+                <i class="bi bi-eye me-1"></i>Guest — view only save
+            </span>
+        }
+    </div>
+</div>
+
+<!-- Collaboration Bar -->
+<div id="collabBar" class="collab-bar mb-3">
+    <div id="collab-users" class="collab-users"></div>
+    <span id="collab-count" class="collab-count ms-2">Connecting...</span>
+    <div id="collab-typing-indicators" class="ms-2"></div>
+    <span class="ms-auto" id="collab-status" class="collab-status-text text-muted">● Connecting...</span>
+</div>
+
+<div class="row">
+    <!-- Sidebar entries -->
+    <div class="col-md-2">
+        <div class="card rounded-3 shadow-sm">
+            <div class="card-header bg-primary text-white py-2 d-flex justify-content-between align-items-center">
+                <small class="fw-semibold"><i class="bi bi-calendar3 me-1"></i>Entries</small>
+                @if (!isGuest)
+                {
+                    <button type="button" class="btn btn-sm btn-light py-0 px-2"
+                            data-bs-toggle="modal" data-bs-target="#addEntryRoomModal"
+                            title="Tambah Entry">
+                        <i class="bi bi-plus-lg"></i>
+                    </button>
+                }
+            </div>
+            <div class="list-group list-group-flush" id="entrySidebar">
+                @{
+                    var entries = ViewBag.Entries as List<NoteApp.Models.DailyEntry>;
+                    if (entries != null)
+                    {
+                        foreach (var e in entries)
+                        {
+                            <a href="javascript:void(0)"
+                               data-id="@e.Id"
+                               class="list-group-item list-group-item-action listDateSidebar py-2 small">
+                                <i class="bi bi-calendar-event me-1 text-muted"></i>
+                                @(string.IsNullOrEmpty(e.Date) ? "-" : Convert.ToDateTime(e.Date).ToString("dd MMM yyyy"))
+                            </a>
+                        }
+                    }
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- Editor area -->
+    <div class="col-md-10">
+        <div id="roomDetailContainer">
+            <div class="p-4 text-center text-muted">
+                <div class="spinner-border spinner-border-sm me-2"></div> Memuat entry...
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Tambah Entry (non-guest only) -->
+@if (!isGuest)
+{
+    <div class="modal fade" id="addEntryRoomModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content rounded-4 shadow-sm">
+                <div class="modal-header border-0">
+                    <h5 class="modal-title fw-semibold">
+                        <i class="bi bi-calendar-plus me-2 text-primary"></i>Tambah Entry
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <label class="form-label fw-semibold">Tanggal</label>
+                    <input type="date" class="form-control" id="newRoomEntryDate" />
+                    <div class="text-danger small mt-1 d-none" id="newRoomEntryDateError">Tanggal wajib diisi.</div>
+                </div>
+                <div class="modal-footer border-0">
+                    <button type="button" class="btn btn-secondary rounded-pill" data-bs-dismiss="modal">Batal</button>
+                    <button type="button" class="btn btn-primary rounded-pill" id="btnSaveRoomEntry">
+                        <i class="bi bi-save me-1"></i>Buat Entry
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@section Scripts {
+    <script>
+        var modelId = "@Model.Id";
+        var entryId = "";
+        var isGuest = @(isGuest ? "true" : "false");
+        var collabDisplayName = "@displayName";
+        var collabAvatar = "@avatar";
+        var collabUserColor = "@userColor";
+        var collabClient = null;
+
+        function applyEditorColor(color) {
+            // Border TinyMCE container
+            const container = document.querySelector('.tox-tinymce');
+            if (container) {
+                container.style.borderColor = color;
+                container.style.borderWidth = '2px';
+                container.style.boxShadow = `0 0 0 3px ${color}33`;
+                container.style.borderRadius = '6px';
+            }
+
+            // Warna cursor di dalam iframe TinyMCE
+            try {
+                const iframe = document.querySelector('.tox-edit-area__iframe');
+                if (iframe && iframe.contentDocument) {
+                    const style = iframe.contentDocument.createElement('style');
+                    style.id = 'collab-cursor-style';
+                    style.textContent = `
+                        body { caret-color: ${color} !important; }
+                        ::selection { background: ${color}44 !important; }
+                    `;
+                    // Hapus style lama jika ada
+                    const old = iframe.contentDocument.getElementById('collab-cursor-style');
+                    if (old) old.remove();
+                    iframe.contentDocument.head.appendChild(style);
+                }
+            } catch (e) {}
+        }
+
+        function loadRoomDetail(id, noteId) {
+            var data = {};
+            if (id) data.id = id;
+            if (noteId) data.noteId = noteId;
+
+            $.ajax({
+                url: '/Collaboration/GetDetailNote',
+                type: 'GET',
+                data: data,
+                beforeSend: function () {
+                    $("#roomDetailContainer").html(`<div class="p-4 text-center text-muted"><div class="spinner-border spinner-border-sm me-2"></div> Loading...</div>`);
+                },
+                success: function (res) {
+                    if (!res.success || !res.data) {
+                        const emptyBtn = !isGuest
+                            ? `<button class="btn btn-primary mt-3" data-bs-toggle="modal" data-bs-target="#addEntryRoomModal">
+                                   <i class="bi bi-calendar-plus me-1"></i> Tambah Entry Pertama
+                               </button>`
+                            : `<p class="text-muted small">Tunggu admin menambahkan entry.</p>`;
+
+                        $("#roomDetailContainer").html(`
+                            <div class="text-center p-5">
+                                <i class="bi bi-calendar-x fs-1 text-muted"></i>
+                                <h5 class="mt-3">Room kosong</h5>
+                                <p class="text-muted">Belum ada entry di room ini.</p>
+                                ${emptyBtn}
+                            </div>
+                        `);
+                        return;
+                    }
+
+                    let entry = res.data;
+                    var dateStr = entry.date ? moment(entry.date, "YYYY-MM-DD").format("DD MMM YYYY") : "-";
+
+                    let saveBtn = isGuest
+                        ? `<button type="button" class="btn btn-secondary me-3" disabled title="Guest tidak bisa menyimpan">
+                               <i class="bi bi-lock me-1"></i> Guest (Read-only save)
+                           </button>`
+                        : `<button type="submit" class="btn btn-primary me-3" id="submitBtn">
+                               <i class="bi bi-save me-1"></i> Simpan
+                           </button>`;
+
+                    let html = `
+                        <div class="mb-3 card p-3">
+                            <div class="row mb-2">
+                                <div class="col-2">
+                                    <span class="form-control badge-lg bg-label-dark text-nowrap">
+                                        <i class="bi bi-calendar-event me-1"></i> ${dateStr}
+                                    </span>
+                                </div>
+                                <div class="col-10">
+                                    <input placeholder="Title" class="form-control"
+                                           type="text" name="Title_Note"
+                                           value="${entry.title_Note ?? ""}"
+                                           ${isGuest ? "readonly" : ""} />
+                                </div>
+                            </div>
+                            <div class="row g-2">
+                                <div class="col-12 col-md-4">
+                                    <div class="d-flex flex-wrap p-2 border rounded">
+                                        ${renderStatus(entry.status_absen, isGuest)}
+                                    </div>
+                                </div>
+                                <div class="col-6 col-md-2">
+                                    <input class="form-control time-picker" type="time" name="WH_start"
+                                           value="${entry.wH_start ?? ""}" ${isGuest ? "disabled" : ""} />
+                                </div>
+                                <div class="col-6 col-md-2">
+                                    <input class="form-control time-picker" type="time" name="WH_end"
+                                           value="${entry.wH_end ?? ""}" ${isGuest ? "disabled" : ""} />
+                                </div>
+                                <div class="col-6 col-md-2">
+                                    <input class="form-control time-picker" type="time" name="OT_start"
+                                           value="${entry.oT_start ?? ""}" ${isGuest ? "disabled" : ""} />
+                                </div>
+                                <div class="col-6 col-md-2">
+                                    <input class="form-control time-picker" type="time" name="OT_end"
+                                           value="${entry.oT_end ?? ""}" ${isGuest ? "disabled" : ""} />
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card rounded-4 shadow-sm">
+                            <div class="card-body">
+                                <form id="roomEntryForm">
+                                    <input type="hidden" name="NoteId" value="${modelId}" />
+                                    <input type="hidden" name="Date" id="dateNote" value="${dateStr}" />
+                                    <input type="hidden" name="Id" value="${entry.id ?? ""}" />
+                                    <textarea class="min-vh-100" id="ContentEditor" name="Content">${entry.content ?? ""}</textarea>
+                                    <div class="mt-3 mb-3 me-1 end-0 bottom-0 m-5 rounded-pill" style="position:fixed">
+                                        ${saveBtn}
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    `;
+
+                    $("#roomDetailContainer").html(html);
+
+                    // Init TinyMCE
+                    if (tinymce.get("ContentEditor")) tinymce.get("ContentEditor").remove();
+
+                    tinymce.init({
+                        selector: '#ContentEditor',
+                        menubar: false,
+                        readonly: false, // semua bisa edit di editor, tapi guest tidak bisa save ke DB
+                        plugins: 'anchor autolink charmap codesample emoticons image link lists media searchreplace table visualblocks wordcount code fullscreen',
+                        toolbar: isGuest
+                            ? 'code fullscreen | undo redo | blocks fontsize | bold italic forecolor | link table | alignleft aligncenter alignright | numlist bullist'
+                            : 'saveButton | code fullscreen | undo redo | blocks fontsize | bold italic forecolor removeformat | link image table | alignleft aligncenter alignright lineheight | numlist bullist indent outdent',
+                        branding: false,
+                        setup: function (editor) {
+                            let collabDebounce = null;
+
+                            if (!isGuest) {
+                                editor.ui.registry.addButton('saveButton', {
+                                    text: 'Save',
+                                    icon: 'save',
+                                    onAction: function () { doSave(editor); }
+                                });
+                                editor.addShortcut("ctrl+s", "Save", function () {
+                                    doSave(editor);
+                                    return false;
+                                });
+                            }
+
+                            // Collaboration broadcast
+                            editor.on('Change KeyUp Paste Undo Redo', function () {
+                                if (collabClient && !collabClient._applyingRemote) {
+                                    clearTimeout(collabDebounce);
+                                    collabDebounce = setTimeout(function () {
+                                        collabClient.sendContentUpdate(editor.getContent());
+                                    }, 300);
+                                }
+                            });
+
+                            editor.on('init', function () {
+                                const currentEntryId = $("input[name='Id']").val();
+                                if (!currentEntryId) return;
+
+                                if (collabClient) { collabClient.destroy(); collabClient = null; }
+
+                                collabClient = new CollaborationClient(
+                                    currentEntryId,
+                                    collabDisplayName,
+                                    collabAvatar
+                                );
+                                collabClient.init(editor);
+
+                                // Apply warna cursor dari username (deterministik)
+                                applyEditorColor(collabUserColor);
+                            });
+                        }
+                    });
+
+                    $('.time-picker').flatpickr({ enableTime: true, noCalendar: true, time_24hr: true });
+                },
+                error: function () {
+                    $("#roomDetailContainer").html(`<div class="alert alert-danger">Terjadi kesalahan server.</div>`);
+                }
+            });
+        }
+
+        function doSave(editor) {
+            if (isGuest) return;
+            const $btn = $("#submitBtn");
+            $btn.prop("disabled", true).html(`<span class="spinner-border spinner-border-sm me-2"></span> Menyimpan...`);
+
+            $.ajax({
+                type: "POST",
+                url: "/Collaboration/UpdateEntry",
+                data: {
+                    Id: $("input[name='Id']").val(),
+                    NoteId: $("input[name='NoteId']").val(),
+                    Date: $("#dateNote").val(),
+                    Title_Note: $("input[name='Title_Note']").val(),
+                    WH_start: $("input[name='WH_start']").val(),
+                    WH_end: $("input[name='WH_end']").val(),
+                    OT_start: $("input[name='OT_start']").val(),
+                    OT_end: $("input[name='OT_end']").val(),
+                    Status_absen: $("input[name='Status_absen']:checked").val(),
+                    Content: editor.getContent()
+                },
+                success: function (res) {
+                    $btn.prop("disabled", false).html(`<i class="bi bi-save me-1"></i> Simpan`);
+                    if (res.success) {
+                        editor.notificationManager.open({ text: 'Tersimpan.', type: 'success', timeout: 2000 });
+                    }
+                },
+                error: function () {
+                    $btn.prop("disabled", false).html(`<i class="bi bi-save me-1"></i> Simpan`);
+                }
+            });
+        }
+
+        function renderStatus(selected, disabled) {
+            const opts = [
+                { value: "1", label: "Masuk" },
+                { value: "2", label: "Cuti" },
+                { value: "3", label: "Libur" },
+                { value: "4", label: "Lainnya" },
+            ];
+            return opts.map(o => `
+                <div class="form-check me-2">
+                    <input class="form-check-input" type="radio" name="Status_absen"
+                           value="${o.value}" ${selected == o.value ? "checked" : ""} ${disabled ? "disabled" : ""} />
+                    <label class="form-check-label">${o.label}</label>
+                </div>
+            `).join("");
+        }
+
+        // Sidebar click
+        $(".listDateSidebar").on("click", function () {
+            entryId = $(this).data("id");
+            if (collabClient) { collabClient.destroy(); collabClient = null; }
+            loadRoomDetail(entryId, null);
+        });
+
+        // Form submit (non-guest)
+        $(document).on("submit", "#roomEntryForm", function (e) {
+            e.preventDefault();
+            if (isGuest) return;
+            doSave(tinymce.get("ContentEditor"));
+        });
+
+        $(document).ready(function () {
+            loadRoomDetail(null, modelId);
+
+            // Tambah Entry handler (non-guest)
+            $('#btnSaveRoomEntry').on('click', function () {
+                const date = $('#newRoomEntryDate').val();
+                if (!date) {
+                    $('#newRoomEntryDateError').removeClass('d-none');
+                    return;
+                }
+                $('#newRoomEntryDateError').addClass('d-none');
+
+                const $btn = $(this);
+                $btn.prop('disabled', true).html(`<span class="spinner-border spinner-border-sm me-2"></span> Membuat...`);
+
+                $.ajax({
+                    type: 'POST',
+                    url: '/Note/AddEntry',
+                    data: {
+                        __RequestVerificationToken: $('input[name="__RequestVerificationToken"]').val(),
+                        NoteId: modelId,
+                        Date: date,
+                        Content: '',
+                        UserId: ''
+                    },
+                    success: function () {
+                        $('#addEntryRoomModal').modal('hide');
+                        $btn.prop('disabled', false).html(`<i class="bi bi-save me-1"></i>Buat Entry`);
+                        $('#newRoomEntryDate').val('');
+
+                        // Refresh sidebar entries via AJAX
+                        refreshSidebar(date);
+                    },
+                    error: function () {
+                        $btn.prop('disabled', false).html(`<i class="bi bi-save me-1"></i>Buat Entry`);
+                        alert('Gagal membuat entry.');
+                    }
+                });
+            });
+
+            $('#newRoomEntryDate').on('change', function () {
+                $('#newRoomEntryDateError').addClass('d-none');
+            });
+        });
+
+        function refreshSidebar(selectDate) {
+            $.ajax({
+                url: '/Collaboration/GetPublicNoteEntries',
+                type: 'GET',
+                data: { noteId: modelId },
+                success: function (res) {
+                    if (!res.success) return;
+                    const $sidebar = $('#entrySidebar');
+                    $sidebar.empty();
+
+                    res.data.forEach(function (e) {
+                        const dateFormatted = e.date
+                            ? moment(e.date, 'YYYY-MM-DD').format('DD MMM YYYY')
+                            : '-';
+                        const isActive = e.date && e.date.startsWith(selectDate);
+                        $sidebar.append(`
+                            <a href="javascript:void(0)"
+                               data-id="${e.id}"
+                               class="list-group-item list-group-item-action listDateSidebar py-2 small ${isActive ? 'active' : ''}">
+                                <i class="bi bi-calendar-event me-1 text-muted"></i>${dateFormatted}
+                            </a>
+                        `);
+                    });
+
+                    // Re-bind click event
+                    $('#entrySidebar').off('click', '.listDateSidebar').on('click', '.listDateSidebar', function () {
+                        entryId = $(this).data('id');
+                        if (collabClient) { collabClient.destroy(); collabClient = null; }
+                        loadRoomDetail(entryId, null);
+                    });
+
+                    // Auto load entry yang baru dibuat
+                    const $newItem = $('#entrySidebar .listDateSidebar').first();
+                    if ($newItem.length) {
+                        entryId = $newItem.data('id');
+                        loadRoomDetail(entryId, null);
+                    }
+                }
+            });
+        }
+    </script>
+}

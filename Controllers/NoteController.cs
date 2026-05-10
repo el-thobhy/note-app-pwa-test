@@ -1,5 +1,6 @@
 ﻿using ELAuth.Helper;
 using Microsoft.AspNetCore.Mvc;
+using NoteApp.Helper;
 using NoteApp.Models;
 using NoteApp.Services;
 using NoteAppPWA.Controllers;
@@ -37,8 +38,10 @@ namespace NoteApp.Controllers
 
             ViewBag.SelectedDate = selectedDate;
             ViewBag.Entries = _entryService.GetEntryListDateByNoteId(id);
-            //ViewBag.Entry = selectedEntry;
             ViewBag.NoteTitle = note.Title;
+
+            // Warna konsisten dari ClaimTypes.Name
+            ViewBag.UserColor = ColorHelper.FromUsername(User.Identity?.Name ?? "");
 
             return View(note);
         }

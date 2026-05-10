@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Mvc.Authorization;
 using Microsoft.IdentityModel.Tokens;
+using NoteApp.Hubs;
 using NoteApp.Services;
 using NoteAppPWA.Helper;
 using NoteAppPWA.Services;
@@ -26,6 +28,7 @@ builder.Services.AddSingleton<ISettingServices, SettingServices>();
 builder.Services.AddHttpClient();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<IEmailHelper, EmailHelper>();
+builder.Services.AddSignalR();
 
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(options =>
@@ -39,6 +42,19 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         options.ExpireTimeSpan = TimeSpan.FromMinutes(sessionTimeOut); // Sesuaikan dengan kebutuhan
         options.SlidingExpiration = true; // Perbarui waktu kedaluwarsa pada setiap permintaan
     });
+
+// Add Authorization
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("Guest", policy =>
+        policy.RequireAssertion(ctx => !ctx.User.IsInRole("guest")
+    ));
+});
+//Filter user dengan role "guest" tidak bisa mengakses aplikasi
+builder.Services.AddControllersWithViews(options =>
+{
+    options.Filters.Add(new AuthorizeFilter("Guest"));
+});
 
 var app = builder.Build();
 
@@ -61,5 +77,7 @@ app.UseAuthorization();
 app.MapControllerRoute(
     name: "default",
     pattern: "{controller=Home}/{action=Index}/{id?}");
+
+app.MapHub<CollaborationHub>("/hubs/collaboration");
 
 app.Run();

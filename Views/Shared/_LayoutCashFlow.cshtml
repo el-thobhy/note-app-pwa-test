@@ -1,0 +1,23 @@
+﻿@{
+    var page = ViewBag.Page;
+}
+
+<h4 class="py-3 breadcrumb-wrapper mb-4">
+    <span class="text-muted fw-light">Cash Flow /</span> @(page == "dashboard" ? "Dashboard" : page == "outflow" ? "Out Flow" : "")
+</h4>
+
+<div class="row">
+    <div class="col-md-12">
+        <ul class="nav nav-pills flex-column flex-md-row mb-3">
+            <li class="nav-item">
+                <a class="nav-link @(page == "dashboard" ? "active": "")" href="@Url.Action("Index", "CashFlow")"><i class="bx bx-user me-1"></i> Dashboard</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link  @(page == "outflow" ? "active" : "") href="@Url.Action("OutFlow", "CashFlow")"><i class="bx bx-lock-alt me-1"></i> Out Flow </a>
+            </li>
+        </ul>
+        <div class="card mb-4">
+            @{Html.RenderPartial("Index", "CashFlow");}
+        </div>
+    </div>
+</div>
