@@ -3,18 +3,22 @@ import * as Y from 'yjs';
 
 const docId = document.querySelector('h2').textContent.replace('Document: ', '').trim();
 
-// === 1. Setup Yjs ===
-const ydoc = new Y.Doc();
+// ─── Yjs setup ────────────────────────────────────────────────────────────────
+const ydoc  = new Y.Doc();
 const ytext = ydoc.getText('content');
-var tinymceEditor = null;
+var   editor = null;   // TinyMCE instance
 
-// Mencegah feedback loop: Yjs update → editor → Yjs update → ...
-let _applyingFromYjs = false;
+// "lastCommitted" = konten HTML yang terakhir kali kita tulis ke Yjs.
+// Dipakai untuk mendeteksi apakah editor benar-benar berubah dari sudut pandang Yjs.
+let lastCommitted = '';
 
-// Apakah initial sync dari server sudah selesai
-let _syncReady = false;
+// Sedang apply update dari Yjs ke editor → jangan trigger sync balik
+let applyingRemote = false;
 
-// === 2. Setup SignalR ===
+// Sync sudah siap (initial state dari server sudah diterima)
+let syncReady = false;
+
+// ─── SignalR setup ─────────────────────────────────────────────────────────────
 const connection = new signalR.HubConnectionBuilder()
     .withUrl('/documentHub')
     .withAutomaticReconnect()
@@ -22,179 +26,154 @@ const connection = new signalR.HubConnectionBuilder()
 
 let isJoined = false;
 
-// === 3. Yjs observer: kirim update ke server ===
+// ─── Yjs → Server ─────────────────────────────────────────────────────────────
+// Kirim update ke server hanya jika berasal dari user lokal
 ydoc.on('update', (update, origin) => {
     if (origin !== 'local') return;
-    if (!isJoined || !_syncReady) return;
+    if (!isJoined || !syncReady) return;
     if (connection.state !== signalR.HubConnectionState.Connected) return;
 
     connection.invoke('SendUpdate', docId, Array.from(update))
-        .catch(err => console.error('[Collab] Send failed:', err.message));
+        .catch(err => console.error('[Collab] send failed:', err.message));
 });
 
-// === 4. Yjs observer: update editor saat Yjs berubah ===
+// ─── Yjs → Editor ─────────────────────────────────────────────────────────────
+// Saat Yjs berubah karena update remote, update editor
 ytext.observe(event => {
-    // Hanya update editor jika perubahan bukan dari user lokal
-    // (perubahan lokal sudah ada di editor, tidak perlu di-set ulang)
-    if (event.transaction.origin === 'local') return;
-    if (!tinymceEditor || _applyingFromYjs) return;
+    if (event.transaction.origin === 'local') return;  // perubahan lokal, skip
+    if (!editor || applyingRemote) return;
 
-    const newContent = ytext.toString();
-    const currentContent = tinymceEditor.getContent();
-    if (newContent === currentContent) return;
+    const yjsContent = ytext.toString();
 
-    _applyingFromYjs = true;
+    // Update lastCommitted agar editor change handler tidak re-commit
+    lastCommitted = yjsContent;
+
+    applyingRemote = true;
     try {
-        const bookmark = tinymceEditor.selection.getBookmark(2, true);
-        tinymceEditor.setContent(newContent);
-        try { tinymceEditor.selection.moveToBookmark(bookmark); } catch (_) {}
+        const bm = editor.selection.getBookmark(2, true);
+        editor.setContent(yjsContent);
+        try { editor.selection.moveToBookmark(bm); } catch (_) {}
     } finally {
-        _applyingFromYjs = false;
+        applyingRemote = false;
     }
 });
 
-// === 5. SignalR handlers ===
-
-// Terima update dari server (dari peer atau initial sync)
-connection.on('ReceiveUpdate', (updateArray) => {
-    if (!updateArray || updateArray.length === 0) return;
+// ─── SignalR handlers ──────────────────────────────────────────────────────────
+connection.on('ReceiveUpdate', (arr) => {
+    if (!arr?.length) return;
     try {
-        const uint8 = new Uint8Array(updateArray);
-        // Origin 'remote' → tidak akan di-broadcast balik ke server
-        Y.applyUpdate(ydoc, uint8, 'remote');
-    } catch (err) {
-        console.error('[Collab] Error applying update:', err);
+        Y.applyUpdate(ydoc, new Uint8Array(arr), 'remote');
+    } catch (e) {
+        console.error('[Collab] applyUpdate error:', e);
     }
 });
 
-// Server selesai kirim semua updates → editor siap dipakai
 connection.on('SyncComplete', () => {
-    _syncReady = true;
-    console.log('[Collab] Sync complete, ytext:', ytext.toString().substring(0, 50));
+    syncReady = true;
+    const yjsContent = ytext.toString();
+    console.log('[Collab] sync ready, content length:', yjsContent.length);
 
-    // Setelah sync, update editor dengan state Yjs terkini
-    if (tinymceEditor) {
-        const yjsContent = ytext.toString();
-        if (yjsContent && yjsContent !== tinymceEditor.getContent()) {
-            _applyingFromYjs = true;
-            try {
-                tinymceEditor.setContent(yjsContent);
-            } finally {
-                _applyingFromYjs = false;
-            }
-        }
+    // Setelah sync, set lastCommitted ke state Yjs saat ini
+    lastCommitted = yjsContent;
+
+    // Jika ada konten dari server, tampilkan di editor
+    if (editor && yjsContent && yjsContent !== editor.getContent()) {
+        applyingRemote = true;
+        try { editor.setContent(yjsContent); } finally { applyingRemote = false; }
     }
 });
 
-// Peer minta kita kirim full state ke newcomer
-connection.on('RequestFullState', async (targetConnectionId) => {
+connection.on('RequestFullState', async (targetId) => {
     try {
-        const fullState = Y.encodeStateAsUpdate(ydoc);
-        await connection.invoke('SendFullState', docId, targetConnectionId, Array.from(fullState));
-        console.log('[Collab] Full state sent to', targetConnectionId);
-    } catch (err) {
-        console.error('[Collab] Error sending full state:', err);
+        const state = Y.encodeStateAsUpdate(ydoc);
+        await connection.invoke('SendFullState', docId, targetId, Array.from(state));
+    } catch (e) {
+        console.error('[Collab] sendFullState error:', e);
     }
 });
 
-// === 6. TinyMCE Setup ===
+// ─── TinyMCE setup ─────────────────────────────────────────────────────────────
 tinymce.init({
     selector: '#editor',
     height: 500,
     plugins: 'link image code lists',
     toolbar: 'undo redo | formatselect | bold italic | alignleft aligncenter alignright | bullist numlist | code',
 
-    setup: (editor) => {
-        tinymceEditor = editor;
+    setup(ed) {
+        editor = ed;
 
-        editor.on('init', () => {
-            startConnection();
-        });
+        ed.on('init', () => startConnection());
 
-        let debounceTimer;
+        // Debounce timer untuk sync editor → Yjs
+        let debounce = null;
 
-        editor.on('input keyup paste', () => {
-            if (_applyingFromYjs || !_syncReady) return;
+        ed.on('input keyup paste Change', () => {
+            // Jangan proses jika sedang apply dari remote
+            if (applyingRemote || !syncReady || !isJoined) return;
 
-            clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => {
-                if (_applyingFromYjs || !isJoined || !_syncReady) return;
+            clearTimeout(debounce);
+            debounce = setTimeout(() => {
+                if (applyingRemote || !syncReady || !isJoined) return;
 
-                const newHtml = editor.getContent();
-                const oldHtml = ytext.toString();
+                const current = ed.getContent();
 
-                if (newHtml === oldHtml) return;
+                // Hanya commit ke Yjs jika konten benar-benar berbeda
+                // dari yang terakhir kita commit
+                if (current === lastCommitted) return;
 
-                // Hitung diff minimal untuk menghindari "delete all + insert all"
-                applyDiffToYtext(oldHtml, newHtml);
-            }, 80);
+                const prev = lastCommitted;
+                lastCommitted = current;   // update SEBELUM transact agar tidak loop
+
+                // Hitung diff minimal (prefix/suffix) untuk operasi Yjs yang tepat
+                commitDiff(prev, current);
+            }, 100);
         });
     }
 });
 
-// === 7. Diff minimal: hanya insert/delete bagian yang berubah ===
-function applyDiffToYtext(oldStr, newStr) {
-    if (oldStr === newStr) return;
-
+// ─── Diff minimal: hanya delete/insert bagian yang berubah ────────────────────
+function commitDiff(oldStr, newStr) {
     // Cari common prefix
-    let start = 0;
-    while (start < oldStr.length && start < newStr.length && oldStr[start] === newStr[start]) {
-        start++;
-    }
+    let s = 0;
+    const minLen = Math.min(oldStr.length, newStr.length);
+    while (s < minLen && oldStr[s] === newStr[s]) s++;
 
     // Cari common suffix
-    let oldEnd = oldStr.length;
-    let newEnd = newStr.length;
-    while (oldEnd > start && newEnd > start && oldStr[oldEnd - 1] === newStr[newEnd - 1]) {
-        oldEnd--;
-        newEnd--;
-    }
+    let oe = oldStr.length;
+    let ne = newStr.length;
+    while (oe > s && ne > s && oldStr[oe - 1] === newStr[ne - 1]) { oe--; ne--; }
 
-    const deleteCount = oldEnd - start;
-    const insertText = newStr.slice(start, newEnd);
+    const del = oe - s;
+    const ins = newStr.slice(s, ne);
+
+    if (del === 0 && ins.length === 0) return;  // tidak ada perubahan nyata
 
     ydoc.transact(() => {
-        if (deleteCount > 0) ytext.delete(start, deleteCount);
-        if (insertText.length > 0) ytext.insert(start, insertText);
+        if (del > 0) ytext.delete(s, del);
+        if (ins)     ytext.insert(s, ins);
     }, 'local');
 }
 
-// === 8. Connection Management ===
+// ─── Connection management ─────────────────────────────────────────────────────
 async function startConnection() {
     try {
         await connection.start();
-        console.log('[Collab] Connected');
-
         await connection.invoke('JoinDocument', docId);
-        console.log('[Collab] Joined:', docId);
-
         isJoined = true;
-
-        // Jika tidak ada state dari server (room kosong),
-        // sync konten editor ke Yjs dan tandai sync selesai
-        // SyncComplete akan di-trigger oleh server jika room kosong
-
-    } catch (err) {
-        console.error('[Collab] Connection error:', err);
+        console.log('[Collab] joined:', docId);
+    } catch (e) {
+        console.error('[Collab] connect error:', e);
         setTimeout(startConnection, 3000);
     }
 }
 
-connection.onclose(() => {
-    isJoined = false;
-    _syncReady = false;
-});
-
-connection.onreconnecting(() => {
-    isJoined = false;
-    _syncReady = false;
-});
-
+connection.onclose(() => { isJoined = false; syncReady = false; });
+connection.onreconnecting(() => { isJoined = false; syncReady = false; });
 connection.onreconnected(() => {
-    _syncReady = false;
+    syncReady = false;
     connection.invoke('JoinDocument', docId)
         .then(() => { isJoined = true; })
-        .catch(err => console.error('[Collab] Rejoin failed:', err));
+        .catch(e => console.error('[Collab] rejoin error:', e));
 });
 
 window.addEventListener('beforeunload', () => {
