@@ -2,19 +2,25 @@
  * collaboration.js
  * Real-time collaboration dengan server version guard + client-side 3-way merge.
  *
- * Alur:
- * 1. Client ketik → simpan sebagai _pendingContent, schedule debounced send
- * 2. Send: kirim (content, clientVersion) ke server
- * 3a. Server accept (clientVersion >= serverVersion):
- *     → broadcast ke peers via ReceiveUpdate
- *     → kirim UpdateAck ke pengirim → update _serverVersion, clear pending
- * 3b. Server reject (client ketinggalan):
- *     → kirim ReceiveUpdate dengan state terbaru ke pengirim
- *     → client merge: _threeWayMerge(_baseContent, serverContent, _pendingContent)
- *     → kirim hasil merge sebagai update baru
+ * State yang dijaga client:
+ *   _serverContent  = konten terakhir yang dikonfirmasi server (via UpdateAck atau ReceiveDocState)
+ *   _serverVersion  = version dari _serverContent
+ *   _pendingContent = konten lokal terbaru yang belum dikonfirmasi server (null = tidak ada pending)
  *
- * _baseContent = konten terakhir yang dikonfirmasi server (via UpdateAck atau ReceiveDocState)
- * Merge dilakukan di client menggunakan diff-match-patch.
+ * Alur kirim:
+ *   user ketik → simpan ke _pendingContent → schedule debounce
+ *   debounce fire → merge(_serverContent, _pendingContent) → kirim ke server
+ *   UpdateAck → _serverContent = apa yang baru dikonfirmasi, _serverVersion = newVersion
+ *
+ * Alur terima dari peer:
+ *   ReceiveUpdate → simpan ke _serverContent + _serverVersion
+ *                 → kalau tidak ada pending: apply ke editor
+ *                 → kalau ada pending: apply merged ke editor, reschedule send
+ *                   (merge dilakukan di sini supaya editor langsung update,
+ *                    tapi _scheduleSend juga merge ulang saat fire untuk pakai data terbaru)
+ *
+ * Merge selalu dilakukan TEPAT SEBELUM kirim menggunakan data terbaru —
+ * tidak bisa di-cancel oleh ketikan baru karena merge baca this._pendingContent saat fire.
  */
 
 class CollaborationClient {
@@ -28,13 +34,17 @@ class CollaborationClient {
         this._connected      = false;
         this._applyingRemote = false;
 
-        this._baseContent    = '';   // konten terakhir yang dikonfirmasi server
+        // State server — hanya update setelah konfirmasi dari server
+        this._serverContent  = '';
         this._serverVersion  = 0;
-        this._pendingContent = null; // konten lokal yang belum dikonfirmasi server
 
-        this._sendDebounce   = null;
-        this._isTyping       = false;
-        this._typingTimer    = null;
+        // Konten lokal terbaru yang belum dikonfirmasi server
+        // null = tidak ada perubahan lokal yang pending
+        this._pendingContent = null;
+
+        this._sendDebounce = null;
+        this._isTyping     = false;
+        this._typingTimer  = null;
 
         this._dmp   = null;
         this._peers = new Map();
@@ -47,10 +57,11 @@ class CollaborationClient {
             this._dmp = new diff_match_patch();
             this._dmp.Patch_Timeout = 1;
         } else {
-            console.warn('[Collab] diff-match-patch tidak tersedia, merge akan fallback ke server content');
+            console.warn('[Collab] diff-match-patch tidak tersedia, merge fallback ke server content');
         }
 
-        this._baseContent = this.editor.getContent();
+        // Init server content dari konten awal editor
+        this._serverContent = this.editor.getContent();
 
         this.connection = new signalR.HubConnectionBuilder()
             .withUrl('/hubs/collaboration')
@@ -70,7 +81,7 @@ class CollaborationClient {
         }
 
         this.connection.onreconnected(async () => {
-            this._connected     = true;
+            this._connected    = true;
             this._serverVersion = 0;
             await this.connection.invoke('JoinEntry', this.entryId, this.displayName, this.avatar);
             this._showStatus('connected');
@@ -80,13 +91,13 @@ class CollaborationClient {
     }
 
     _registerHandlers() {
-        // State awal saat join — apply langsung, set sebagai base
+        // State awal saat join — apply langsung, set sebagai server content
         this.connection.on('ReceiveDocState', (content, version) => {
             if (!content || !this.editor) return;
             this._applyingRemote = true;
             try {
                 this.editor.setContent(content);
-                this._baseContent    = content;
+                this._serverContent  = content;
                 this._serverVersion  = version ?? 0;
                 this._pendingContent = null;
             } finally {
@@ -94,48 +105,39 @@ class CollaborationClient {
             }
         });
 
-        // Dua kasus masuk sini:
-        // (A) Update dari peer — apply ke editor
-        // (B) Resync dari server karena client ketinggalan — merge lalu kirim ulang
+        // Update dari peer ATAU resync dari server
         this.connection.on('ReceiveUpdate', (serverContent, serverVersion) => {
             if (!serverContent || !this.editor) return;
+
+            // Ignore stale — sudah punya version ini atau lebih baru
             if (serverVersion !== undefined && serverVersion <= this._serverVersion) return;
 
-            const prevBase      = this._baseContent;
-            const pending       = this._pendingContent;
-            const prevVersion   = this._serverVersion;
-
-            // Update base dan version ke state server terbaru
-            this._baseContent   = serverContent;
+            // Simpan state server terbaru
+            this._serverContent = serverContent;
             this._serverVersion = serverVersion ?? (this._serverVersion + 1);
 
-            if (pending !== null && pending !== serverContent) {
-                // Ada perubahan lokal yang belum dikonfirmasi server
-                // Merge: base=prevBase, server=serverContent, local=pending
-                const merged = this._threeWayMerge(prevBase, serverContent, pending);
-
-                // Apply merged ke editor (supaya user lihat hasil merge)
+            if (this._pendingContent !== null) {
+                // Ada perubahan lokal pending — tampilkan preview merge ke editor
+                // supaya user tidak melihat konten "loncat"
+                // Merge sebenarnya (yang dikirim ke server) dilakukan di _scheduleSend
+                const preview = this._merge(this._serverContent, this._pendingContent);
                 this._applyingRemote = true;
                 try {
-                    const bookmark = this.editor.selection.getBookmark(2, true);
-                    this.editor.setContent(merged);
-                    try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
-                    // Update base ke merged — ini yang akan kita kirim ke server
-                    this._baseContent = merged;
+                    if (this.editor.getContent() !== preview) {
+                        const bookmark = this.editor.selection.getBookmark(2, true);
+                        this.editor.setContent(preview);
+                        try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
+                    }
                 } finally {
                     this._applyingRemote = false;
                 }
-
-                // Kirim hasil merge ke server
-                this._pendingContent = merged;
-                this._scheduleSend(merged);
+                // Reschedule send — saat fire akan merge ulang dengan _pendingContent terbaru
+                this._scheduleSend();
             } else {
-                // Tidak ada pending — ini update murni dari peer, apply ke editor
-                this._pendingContent = null;
+                // Tidak ada pending — update murni dari peer, apply ke editor
                 this._applyingRemote = true;
                 try {
-                    const localContent = this.editor.getContent();
-                    if (localContent !== serverContent) {
+                    if (this.editor.getContent() !== serverContent) {
                         const bookmark = this.editor.selection.getBookmark(2, true);
                         this.editor.setContent(serverContent);
                         try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
@@ -148,7 +150,11 @@ class CollaborationClient {
 
         // Server konfirmasi update kita diterima
         this.connection.on('UpdateAck', (newVersion) => {
-            // Base sudah benar (di-set saat kirim), cukup update version dan clear pending
+            // Yang dikirim terakhir sekarang jadi server content yang dikonfirmasi
+            // _lastSentContent di-set di _scheduleSend saat invoke
+            if (this._lastSentContent !== undefined) {
+                this._serverContent = this._lastSentContent;
+            }
             this._serverVersion  = newVersion;
             this._pendingContent = null;
         });
@@ -178,25 +184,40 @@ class CollaborationClient {
         if (!this._connected || this._applyingRemote) return;
 
         this._setTyping(true);
+
+        // Simpan ketikan terbaru sebagai pending
         this._pendingContent = htmlContent;
-        this._scheduleSend(htmlContent);
+
+        // Schedule debounced send
+        this._scheduleSend();
 
         clearTimeout(this._typingTimer);
         this._typingTimer = setTimeout(() => this._setTyping(false), 1500);
     }
 
-    _scheduleSend(htmlContent) {
+    /**
+     * Schedule debounced send.
+     * Merge dilakukan DI SINI saat debounce fire — bukan saat ReceiveUpdate.
+     * Dengan begitu selalu pakai _pendingContent dan _serverContent terbaru,
+     * tidak bisa di-cancel oleh ketikan baru.
+     */
+    _scheduleSend() {
         clearTimeout(this._sendDebounce);
         this._sendDebounce = setTimeout(() => {
-            if (!this._connected) return;
+            if (!this._connected || this._pendingContent === null) return;
 
-            // Snapshot version saat ini sebelum kirim
+            // Merge tepat sebelum kirim — pakai state terbaru
+            const toSend = this._merge(this._serverContent, this._pendingContent);
+
+            // Simpan apa yang dikirim supaya UpdateAck bisa update _serverContent
+            this._lastSentContent = toSend;
+
             const versionSnapshot = this._serverVersion;
 
             this.connection.invoke(
                 'SendHtmlUpdate',
                 this.entryId,
-                htmlContent,
+                toSend,
                 versionSnapshot
             ).catch(err => console.warn('[Collab] SendHtmlUpdate failed:', err));
 
@@ -204,40 +225,34 @@ class CollaborationClient {
     }
 
     /**
-     * 3-way merge menggunakan diff-match-patch.
+     * Merge server content dengan local pending menggunakan diff-match-patch.
      *
-     * base   = titik divergence terakhir yang dikonfirmasi server
      * server = konten terbaru dari server (sudah include perubahan peer)
      * local  = perubahan lokal yang belum dikonfirmasi
      *
-     * Strategi: buat patch dari base→local, apply ke server content.
+     * Buat patch dari _serverContent lama → local, apply ke server baru.
      * Artinya: perubahan lokal di-overlay ke atas perubahan server.
-     * Conflict resolution: server wins (patch gagal di-apply → bagian server dipertahankan).
      */
-    _threeWayMerge(base, server, local) {
-        // Fast paths
-        if (local  === base)   return server; // tidak ada perubahan lokal
-        if (server === base)   return local;  // tidak ada perubahan server
-        if (local  === server) return local;  // sudah sama
-
-        if (!this._dmp) return server; // fallback tanpa dmp
+    _merge(server, local) {
+        if (local  === server) return local;
+        if (!this._dmp)        return local; // tanpa dmp, local wins
 
         try {
-            // Buat patch: apa yang kita ubah dari base
-            const localPatches = this._dmp.patch_make(base, local);
+            // Patch: apa yang kita ubah dari server content yang kita ketahui
+            const patches = this._dmp.patch_make(this._serverContent, local);
 
-            // Apply patch kita ke konten server
-            const [merged, results] = this._dmp.patch_apply(localPatches, server);
+            // Apply patch ke server content terbaru
+            const [merged, results] = this._dmp.patch_apply(patches, server);
 
             const failCount = results.filter(r => !r).length;
             if (failCount > 0) {
-                console.debug(`[Collab] Merge: ${failCount}/${results.length} patches failed (conflict), server wins for those parts`);
+                console.debug(`[Collab] ${failCount}/${results.length} patches failed, server wins for conflicts`);
             }
 
             return merged;
         } catch (e) {
-            console.warn('[Collab] Merge failed, using server content:', e);
-            return server;
+            console.warn('[Collab] Merge error, using local:', e);
+            return local;
         }
     }
 
