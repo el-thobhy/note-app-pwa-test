@@ -1,48 +1,62 @@
 ﻿// Services/YDocService.cs
-// YDocService: menyimpan Yjs document state di server sebagai raw bytes.
-// Server tidak perlu parse isi dokumen — cukup simpan state vector
-// dan relay update antar client. YDotNet native DLL tidak dibutuhkan.
+// YDocService: akumulasi semua Yjs updates per dokumen.
+// Server tidak parse konten — hanya relay dan akumulasi updates.
+// Client baru menerima semua accumulated updates dan merge sendiri via Yjs CRDT.
 
 public class YDocService
 {
-    private readonly Dictionary<string, byte[]> _states = new();
+    // Simpan semua updates per docId (bukan hanya yang terakhir)
+    private readonly Dictionary<string, List<byte[]>> _updates = new();
     private readonly object _lock = new();
 
     /// <summary>
-    /// Ambil state dokumen. Jika belum ada, return empty array.
-    /// Client akan kirim full state saat pertama join.
+    /// Ambil semua accumulated updates untuk dokumen.
+    /// Client baru akan apply semua ini secara berurutan untuk rebuild state.
     /// </summary>
-    public byte[] GetOrCreateDoc(string docId)
+    public List<byte[]> GetUpdates(string docId)
     {
         lock (_lock)
         {
-            return _states.TryGetValue(docId, out var state) ? state : Array.Empty<byte>();
+            return _updates.TryGetValue(docId, out var list)
+                ? new List<byte[]>(list)   // return copy
+                : new List<byte[]>();
         }
     }
 
     /// <summary>
-    /// Merge update baru ke stored state.
-    /// Karena kita tidak parse Yjs di server, kita simpan update terakhir
-    /// sebagai "latest full state" yang dikirim ke client baru.
+    /// Tambahkan update baru ke akumulasi.
     /// </summary>
-    public void ApplyUpdate(string docId, byte[] update)
+    public void AddUpdate(string docId, byte[] update)
     {
         lock (_lock)
         {
-            // Simpan update terbaru — client yang join belakangan
-            // akan menerima ini dan merge ke local doc mereka
-            _states[docId] = update;
+            if (!_updates.ContainsKey(docId))
+                _updates[docId] = new List<byte[]>();
+            _updates[docId].Add(update);
         }
     }
 
     /// <summary>
-    /// Simpan full state dari client (dipakai saat client pertama join dan kirim state).
+    /// Ganti seluruh state dengan full snapshot dari client.
+    /// Dipakai saat client pertama join dan mengirim state awal.
+    /// Ini menggantikan semua accumulated updates dengan satu snapshot bersih.
     /// </summary>
-    public void SetFullState(string docId, byte[] fullState)
+    public void SetSnapshot(string docId, byte[] snapshot)
     {
         lock (_lock)
         {
-            _states[docId] = fullState;
+            _updates[docId] = new List<byte[]> { snapshot };
+        }
+    }
+
+    /// <summary>
+    /// Cek apakah ada state tersimpan untuk dokumen ini.
+    /// </summary>
+    public bool HasState(string docId)
+    {
+        lock (_lock)
+        {
+            return _updates.ContainsKey(docId) && _updates[docId].Count > 0;
         }
     }
 }
