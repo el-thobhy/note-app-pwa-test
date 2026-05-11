@@ -1,15 +1,15 @@
 /**
  * collaboration.js
- * Real-time collaboration dengan 3-way merge menggunakan diff-match-patch.
+ * Real-time collaboration dengan server-authoritative merge.
  *
- * Strategi merge:
- * - Setiap client menyimpan `baseContent` = konten terakhir yang disepakati
- * - Saat terima update dari peer:
- *     peerDiff  = diff(base, peerContent)   → apa yang peer ubah
- *     localDiff = diff(base, localContent)  → apa yang kita ubah
- *     merged    = apply(peerDiff + localDiff ke base)
- * - Hasil merge di-apply ke editor tanpa replace cursor
- * - base di-update ke merged
+ * Strategi:
+ * - Client kirim update beserta `clientBase` (versi terakhir yang client ketahui)
+ *   dan `clientVersion` ke server.
+ * - Server lakukan 3-way merge dan broadcast hasilnya ke SEMUA client di room,
+ *   termasuk pengirim.
+ * - Client cukup apply hasil dari server — tidak perlu merge sendiri.
+ * - `_baseContent` di client hanya di-update setelah menerima konfirmasi dari server
+ *   via `ReceiveUpdate`.
  */
 
 class CollaborationClient {
@@ -23,25 +23,21 @@ class CollaborationClient {
         this._connected      = false;
         this._applyingRemote = false;
 
-        this._baseContent    = '';   // versi terakhir yang disepakati
+        // Base = konten terakhir yang dikonfirmasi server (bukan yang kita kirim)
+        this._baseContent    = '';
+        this._serverVersion  = 0;   // version terakhir yang diterima dari server
+
         this._sendDebounce   = null;
+        this._pendingContent = null; // konten yang akan dikirim saat debounce fire
+
         this._isTyping       = false;
         this._typingTimer    = null;
 
-        this._dmp    = null; // diff-match-patch instance
         this._peers  = new Map();
     }
 
     async init(editorInstance) {
         this.editor = editorInstance;
-
-        // Init diff-match-patch
-        if (typeof diff_match_patch !== 'undefined') {
-            this._dmp = new diff_match_patch();
-            this._dmp.Patch_Timeout = 1;
-        } else {
-            console.warn('[Collab] diff-match-patch tidak tersedia, fallback ke replace mode');
-        }
 
         // Set base dari konten awal editor
         this._baseContent = this.editor.getContent();
@@ -74,21 +70,69 @@ class CollaborationClient {
 
     _registerHandlers() {
         // State awal saat join room — langsung apply, set sebagai base
-        this.connection.on('ReceiveDocState', (content) => {
+        this.connection.on('ReceiveDocState', (content, version) => {
             if (!content || !this.editor) return;
             this._applyingRemote = true;
             try {
                 this.editor.setContent(content);
-                this._baseContent = content;
+                this._baseContent   = content;
+                this._serverVersion = version ?? 0;
             } finally {
                 this._applyingRemote = false;
             }
         });
 
-        // Update dari peer — merge dengan konten lokal
-        this.connection.on('ReceiveUpdate', (peerContent) => {
-            if (!peerContent || !this.editor || this._applyingRemote) return;
-            this._mergeAndApply(peerContent);
+        // Update dari server (hasil merge yang sudah authoritative)
+        // Diterima oleh SEMUA client, termasuk pengirim
+        this.connection.on('ReceiveUpdate', (serverContent, serverVersion, senderConnectionId) => {
+            if (!serverContent || !this.editor) return;
+
+            // Ignore update yang lebih lama dari yang sudah kita punya
+            if (serverVersion !== undefined && serverVersion <= this._serverVersion) {
+                console.debug('[Collab] Ignoring stale update, serverVer=%d, ourVer=%d',
+                    serverVersion, this._serverVersion);
+                return;
+            }
+
+            const isSelf = senderConnectionId && senderConnectionId === this.connection.connectionId;
+
+            // Selalu update base dan version — ini source of truth dari server
+            this._baseContent   = serverContent;
+            this._serverVersion = serverVersion ?? (this._serverVersion + 1);
+
+            if (isSelf) {
+                // Ini echo dari update kita sendiri — jangan setContent supaya tidak flicker.
+                // Base sudah diupdate di atas, cukup.
+                // Kalau ada pending content yang berbeda dari hasil merge server,
+                // kirim ulang supaya perubahan kita yang belum terkirim tetap masuk.
+                if (this._pendingContent !== null && this._pendingContent !== serverContent) {
+                    this._scheduleSend(this._pendingContent);
+                } else {
+                    this._pendingContent = null;
+                }
+                return;
+            }
+
+            // Update dari peer — apply ke editor
+            this._applyingRemote = true;
+            try {
+                const localContent = this.editor.getContent();
+
+                if (localContent !== serverContent) {
+                    const bookmark = this.editor.selection.getBookmark(2, true);
+                    this.editor.setContent(serverContent);
+                    try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
+                }
+
+                // Kalau ada pending content yang belum dikirim, kirim ulang dengan base baru
+                if (this._pendingContent !== null && this._pendingContent !== serverContent) {
+                    this._scheduleSend(this._pendingContent);
+                } else {
+                    this._pendingContent = null;
+                }
+            } finally {
+                this._applyingRemote = false;
+            }
         });
 
         // Typing awareness
@@ -112,118 +156,52 @@ class CollaborationClient {
     }
 
     /**
-     * 3-way merge: base + peer changes + local changes → merged result.
-     */
-    _mergeAndApply(peerContent) {
-        const localContent = this.editor.getContent();
-
-        // Kalau local sama dengan base (kita tidak mengetik), langsung apply peer
-        if (localContent === this._baseContent) {
-            this._applyingRemote = true;
-            try {
-                if (localContent !== peerContent) {
-                    const bookmark = this.editor.selection.getBookmark(2, true);
-                    this.editor.setContent(peerContent);
-                    try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
-                }
-                this._baseContent = peerContent;
-            } finally {
-                this._applyingRemote = false;
-            }
-            return;
-        }
-
-        // Kalau peer sama dengan base (peer tidak mengubah apa-apa), tidak perlu merge
-        if (peerContent === this._baseContent) {
-            return;
-        }
-
-        // Keduanya berubah dari base — lakukan 3-way merge
-        if (this._dmp) {
-            try {
-                const merged = this._threeWayMerge(this._baseContent, localContent, peerContent);
-                this._applyingRemote = true;
-                try {
-                    if (merged !== localContent) {
-                        const bookmark = this.editor.selection.getBookmark(2, true);
-                        this.editor.setContent(merged);
-                        try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
-                    }
-                    this._baseContent = merged;
-                } finally {
-                    this._applyingRemote = false;
-                }
-            } catch (e) {
-                console.warn('[Collab] Merge failed, using peer content:', e);
-                // Fallback: peer wins
-                this._applyingRemote = true;
-                try {
-                    const bookmark = this.editor.selection.getBookmark(2, true);
-                    this.editor.setContent(peerContent);
-                    try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
-                    this._baseContent = peerContent;
-                } finally {
-                    this._applyingRemote = false;
-                }
-            }
-        } else {
-            // Fallback tanpa dmp: peer wins
-            this._applyingRemote = true;
-            try {
-                const bookmark = this.editor.selection.getBookmark(2, true);
-                this.editor.setContent(peerContent);
-                try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
-                this._baseContent = peerContent;
-            } finally {
-                this._applyingRemote = false;
-            }
-        }
-    }
-
-    /**
-     * 3-way merge menggunakan diff-match-patch patch.
-     * base    = versi awal yang sama-sama dimiliki
-     * local   = versi setelah perubahan lokal
-     * peer    = versi setelah perubahan peer
-     * return  = hasil merge
-     */
-    _threeWayMerge(base, local, peer) {
-        // Buat patch dari base → peer
-        const peerPatches = this._dmp.patch_make(base, peer);
-
-        // Apply patch peer ke local content
-        const [merged, results] = this._dmp.patch_apply(peerPatches, local);
-
-        // Cek apakah semua patch berhasil di-apply
-        const allApplied = results.every(r => r === true);
-        if (!allApplied) {
-            console.warn('[Collab] Some patches failed to apply, partial merge result');
-        }
-
-        return merged;
-    }
-
-    /**
      * Dipanggil dari TinyMCE event saat konten berubah.
+     * Simpan sebagai pending dan schedule debounced send.
      */
     sendContentUpdate(htmlContent) {
         if (!this._connected || this._applyingRemote) return;
 
         this._setTyping(true);
 
-        clearTimeout(this._sendDebounce);
-        this._sendDebounce = setTimeout(() => {
-            if (!this._connected) return;
-            // Update base ke konten yang kita kirim
-            this._baseContent = htmlContent;
-            this.connection.invoke('SendHtmlUpdate', this.entryId, htmlContent)
-                .catch(err => console.warn('[Collab] SendHtmlUpdate failed:', err));
-        }, 300);
+        // Simpan konten terbaru sebagai pending
+        this._pendingContent = htmlContent;
+
+        this._scheduleSend(htmlContent);
 
         clearTimeout(this._typingTimer);
         this._typingTimer = setTimeout(() => {
             this._setTyping(false);
         }, 1500);
+    }
+
+    /**
+     * Schedule debounced send ke server.
+     * Kirim beserta `clientBase` (base yang kita ketahui) dan `clientVersion`
+     * supaya server bisa lakukan 3-way merge yang benar.
+     */
+    _scheduleSend(htmlContent) {
+        clearTimeout(this._sendDebounce);
+        this._sendDebounce = setTimeout(() => {
+            if (!this._connected) return;
+
+            // Snapshot base dan version saat ini sebelum kirim
+            const baseSnapshot    = this._baseContent;
+            const versionSnapshot = this._serverVersion;
+
+            this.connection.invoke(
+                'SendHtmlUpdate',
+                this.entryId,
+                htmlContent,
+                baseSnapshot,
+                versionSnapshot
+            ).catch(err => {
+                console.warn('[Collab] SendHtmlUpdate failed:', err);
+            });
+
+            // TIDAK update _baseContent di sini.
+            // Base hanya update setelah server konfirmasi via ReceiveUpdate.
+        }, 300);
     }
 
     _setTyping(isTyping) {
