@@ -51,6 +51,10 @@ namespace NoteApp.Controllers
                     new Claim(ClaimTypes.Email, response.Data.Email ?? "")
                 };
 
+                foreach (var role in response.Data.Roles)
+                {
+                    claims.Add(new Claim(ClaimTypes.Role, role));
+                }
 
                 var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
                 var principal = new ClaimsPrincipal(identity);
