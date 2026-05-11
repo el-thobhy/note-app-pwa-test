@@ -1,0 +1,63 @@
+﻿@{
+    ViewBag.Title = "Collab Editor";
+}
+
+@section Head {
+    <script type="importmap">
+    {
+        "imports": {
+            "yjs": "https://cdn.jsdelivr.net/npm/yjs/dist/yjs.mjs",
+            "lib0/observable": "https://cdn.jsdelivr.net/npm/lib0/observable.js",
+            "lib0/array": "https://cdn.jsdelivr.net/npm/lib0/array.js",
+            "lib0/math": "https://cdn.jsdelivr.net/npm/lib0/math.js",
+            "lib0/string": "https://cdn.jsdelivr.net/npm/lib0/string.js",
+            "lib0/map": "https://cdn.jsdelivr.net/npm/lib0/map.js",
+            "lib0/set": "https://cdn.jsdelivr.net/npm/lib0/set.js",
+            "lib0/binary": "https://cdn.jsdelivr.net/npm/lib0/binary.js",
+            "lib0/error": "https://cdn.jsdelivr.net/npm/lib0/error.js",
+            "lib0/encoding": "https://cdn.jsdelivr.net/npm/lib0/encoding.js",
+            "lib0/decoding": "https://cdn.jsdelivr.net/npm/lib0/decoding.js",
+            "lib0/random": "https://cdn.jsdelivr.net/npm/lib0/random.js",
+            "lib0/time": "https://cdn.jsdelivr.net/npm/lib0/time.js",
+            "lib0/promise": "https://cdn.jsdelivr.net/npm/lib0/promise.js",
+            "lib0/conditions": "https://cdn.jsdelivr.net/npm/lib0/conditions.js",
+            "lib0/function": "https://cdn.jsdelivr.net/npm/lib0/function.js",
+            "lib0/object": "https://cdn.jsdelivr.net/npm/lib0/object.js",
+            "lib0/buffer": "https://cdn.jsdelivr.net/npm/lib0/buffer.js",
+            "lib0/iterator": "https://cdn.jsdelivr.net/npm/lib0/iterator.js",
+            "lib0/symbol": "https://cdn.jsdelivr.net/npm/lib0/symbol.js",
+            "lib0/logging": "https://cdn.jsdelivr.net/npm/lib0/logging.js",
+            "lib0/metric": "https://cdn.jsdelivr.net/npm/lib0/metric.js",
+            "lib0/webcrypto": "https://cdn.jsdelivr.net/npm/lib0/webcrypto.js",
+            "lib0/environment": "https://cdn.jsdelivr.net/npm/lib0/environment.js",
+            "lib0/dom": "https://cdn.jsdelivr.net/npm/lib0/dom.js",
+            "lib0/pair": "https://cdn.jsdelivr.net/npm/lib0/pair.js",
+            "lib0/number": "https://cdn.jsdelivr.net/npm/lib0/number.js",
+            "lib0/broadcastchannel": "https://cdn.jsdelivr.net/npm/lib0/broadcastchannel.js",
+            "lib0/indexeddb": "https://cdn.jsdelivr.net/npm/lib0/indexeddb.js",
+            "lib0/mutex": "https://cdn.jsdelivr.net/npm/lib0/mutex.js",
+            "lib0/storage": "https://cdn.jsdelivr.net/npm/lib0/storage.js",
+            "lib0/url": "https://cdn.jsdelivr.net/npm/lib0/url.js"
+        }
+    }
+    </script>
+}
+
+<h2>Document: @ViewBag.DocId</h2>
+
+<!-- TinyMCE Editor -->
+<textarea id="editor">Loading...</textarea>
+
+<!-- User info -->
+<div id="user-info">
+    <input type="text" id="username" placeholder="Your name" value="User" />
+    <span id="status" style="color:green;">● Connected</span>
+</div>
+
+<!-- Remote cursors container -->
+<div id="cursors"></div>
+
+@section Scripts {
+    <script src="~/js/signalr.min.js"></script>
+    <script type="module" src="~/js/collab-editor.js"></script>
+}

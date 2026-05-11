@@ -29,6 +29,7 @@ builder.Services.AddSingleton<ISettingServices, SettingServices>();
 builder.Services.AddHttpClient();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<IEmailHelper, EmailHelper>();
+builder.Services.AddSingleton<YDocService>();
 builder.Services.AddSignalR();
 builder.Services.AddScoped<IFileHelper, FileHelper>();
 
@@ -82,5 +83,6 @@ app.MapControllerRoute(
     pattern: "{controller=Home}/{action=Index}/{id?}");
 
 app.MapHub<CollaborationHub>("/hubs/collaboration");
+app.MapHub<DocumentHub>("/documentHub");
 
 app.Run();
