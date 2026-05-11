@@ -9,6 +9,7 @@ using static Azure.Core.HttpHeader;
 
 namespace NoteApp.Controllers
 {
+    [Authorize(Roles = "home,account,role,authorization")]
     public class HomeController : BaseController
     {
         private readonly INoteService _noteService;

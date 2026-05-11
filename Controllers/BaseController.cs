@@ -6,7 +6,6 @@ using System.Security.Claims;
 
 namespace NoteAppPWA.Controllers
 {
-    [Authorize(Roles = "user,admin")]
     public class BaseController : Controller
     {
         protected string? Token { get; private set; }
