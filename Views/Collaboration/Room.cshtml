@@ -193,44 +193,6 @@
                            </button>`;
 
                     let html = `
-                        <div class="mb-3 card p-3">
-                            <div class="row mb-2">
-                                <div class="col-2">
-                                    <span class="form-control badge-lg bg-label-dark text-nowrap">
-                                        <i class="bi bi-calendar-event me-1"></i> ${dateStr}
-                                    </span>
-                                </div>
-                                <div class="col-10">
-                                    <input placeholder="Title" class="form-control"
-                                           type="text" name="Title_Note"
-                                           value="${entry.title_Note ?? ""}"
-                                           ${isGuest ? "readonly" : ""} />
-                                </div>
-                            </div>
-                            <div class="row g-2">
-                                <div class="col-12 col-md-4">
-                                    <div class="d-flex flex-wrap p-2 border rounded">
-                                        ${renderStatus(entry.status_absen, isGuest)}
-                                    </div>
-                                </div>
-                                <div class="col-6 col-md-2">
-                                    <input class="form-control time-picker" type="time" name="WH_start"
-                                           value="${entry.wH_start ?? ""}" ${isGuest ? "disabled" : ""} />
-                                </div>
-                                <div class="col-6 col-md-2">
-                                    <input class="form-control time-picker" type="time" name="WH_end"
-                                           value="${entry.wH_end ?? ""}" ${isGuest ? "disabled" : ""} />
-                                </div>
-                                <div class="col-6 col-md-2">
-                                    <input class="form-control time-picker" type="time" name="OT_start"
-                                           value="${entry.oT_start ?? ""}" ${isGuest ? "disabled" : ""} />
-                                </div>
-                                <div class="col-6 col-md-2">
-                                    <input class="form-control time-picker" type="time" name="OT_end"
-                                           value="${entry.oT_end ?? ""}" ${isGuest ? "disabled" : ""} />
-                                </div>
-                            </div>
-                        </div>
                         <div class="card rounded-4 shadow-sm">
                             <div class="card-body">
                                 <form id="roomEntryForm">
