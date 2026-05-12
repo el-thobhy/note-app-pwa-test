@@ -30,7 +30,33 @@ builder.Services.AddHttpClient();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<IEmailHelper, EmailHelper>();
 builder.Services.AddSingleton<YDocService>();
-builder.Services.AddSignalR();
+builder.Services.AddSignalR(options =>
+{
+    // Enable detailed errors for debugging (disable in production)
+    options.EnableDetailedErrors = true;
+    
+    // Keep-alive interval
+    options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+    
+    // Client timeout
+    options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+})
+.AddHubOptions<DocumentHub>(options =>
+{
+    // Maximum message size: 10MB (default is 32KB)
+    options.MaximumReceiveMessageSize = 10 * 1024 * 1024; // 10MB
+    
+    // Stream buffer capacity
+    options.StreamBufferCapacity = 100;
+})
+.AddHubOptions<CollaborationHub>(options =>
+{
+    // Maximum message size: 10MB (default is 32KB)
+    options.MaximumReceiveMessageSize = 10 * 1024 * 1024; // 10MB
+    
+    // Stream buffer capacity
+    options.StreamBufferCapacity = 100;
+});
 builder.Services.AddScoped<IFileHelper, FileHelper>();
 
 
