@@ -42,6 +42,11 @@ class CollaborationClient {
         // null = tidak ada perubahan lokal yang pending
         this._pendingContent = null;
 
+        // Titik divergence: snapshot _serverContent saat user MULAI ketik
+        // Dipakai sebagai base di patch_make supaya diff akurat
+        // Reset ke null setelah UpdateAck (konfirmasi server)
+        this._mergeBase      = null;
+
         this._sendDebounce = null;
         this._isTyping     = false;
         this._typingTimer  = null;
@@ -100,6 +105,7 @@ class CollaborationClient {
                 this._serverContent  = content;
                 this._serverVersion  = version ?? 0;
                 this._pendingContent = null;
+                this._mergeBase      = null;
             } finally {
                 this._applyingRemote = false;
             }
@@ -150,13 +156,12 @@ class CollaborationClient {
 
         // Server konfirmasi update kita diterima
         this.connection.on('UpdateAck', (newVersion) => {
-            // Yang dikirim terakhir sekarang jadi server content yang dikonfirmasi
-            // _lastSentContent di-set di _scheduleSend saat invoke
             if (this._lastSentContent !== undefined) {
                 this._serverContent = this._lastSentContent;
             }
             this._serverVersion  = newVersion;
             this._pendingContent = null;
+            this._mergeBase      = null; // reset — next ketik akan snapshot ulang
         });
 
         this.connection.on('ReceiveAwareness', (data) => {
@@ -184,6 +189,13 @@ class CollaborationClient {
         if (!this._connected || this._applyingRemote) return;
 
         this._setTyping(true);
+
+        // Snapshot _serverContent sebagai titik divergence saat user MULAI ketik.
+        // Hanya di-set sekali per "sesi ketik" — tidak di-reset selama pending masih ada.
+        // Ini yang dipakai patch_make supaya diff selalu akurat dari titik awal perubahan.
+        if (this._pendingContent === null) {
+            this._mergeBase = this._serverContent;
+        }
 
         // Simpan ketikan terbaru sebagai pending
         this._pendingContent = htmlContent;
@@ -227,21 +239,27 @@ class CollaborationClient {
     /**
      * Merge server content dengan local pending menggunakan diff-match-patch.
      *
-     * server = konten terbaru dari server (sudah include perubahan peer)
-     * local  = perubahan lokal yang belum dikonfirmasi
+     * base   = _mergeBase  → snapshot _serverContent saat user mulai ketik
+     *                         (titik divergence yang benar, tidak bergeser)
+     * server = _serverContent terbaru (sudah include perubahan peer)
+     * local  = _pendingContent (perubahan lokal yang belum dikonfirmasi)
      *
-     * Buat patch dari _serverContent lama → local, apply ke server baru.
-     * Artinya: perubahan lokal di-overlay ke atas perubahan server.
+     * patch_make(base → local) = "apa yang user ubah dari titik awal"
+     * patch_apply(patch, server) = "terapkan perubahan user ke atas konten server terbaru"
      */
     _merge(server, local) {
-        if (local  === server) return local;
-        if (!this._dmp)        return local; // tanpa dmp, local wins
+        if (local === server) return local;
+        if (!this._dmp)       return local;
+
+        // Pakai _mergeBase sebagai titik divergence yang benar.
+        // Fallback ke _serverContent kalau _mergeBase belum di-set.
+        const base = this._mergeBase ?? this._serverContent;
 
         try {
-            // Patch: apa yang kita ubah dari server content yang kita ketahui
-            const patches = this._dmp.patch_make(this._serverContent, local);
+            // Diff: apa yang user ubah dari titik divergence
+            const patches = this._dmp.patch_make(base, local);
 
-            // Apply patch ke server content terbaru
+            // Apply perubahan user ke atas konten server terbaru
             const [merged, results] = this._dmp.patch_apply(patches, server);
 
             const failCount = results.filter(r => !r).length;
