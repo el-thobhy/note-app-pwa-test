@@ -1,6 +1,6 @@
 // wwwroot/js/collab-editor-yxml.js
-// Collaborative editing dengan Y.XmlFragment untuk HTML content
-// Y.XmlFragment didesain untuk structured content (DOM-like)
+// Fix untuk huruf hilang saat multi-user typing
+// Strategi: Sync dengan Y.js state sebelum commit diff
 
 import * as Y from 'yjs';
 
@@ -8,19 +8,15 @@ import * as Y from 'yjs';
 const container = document.getElementById('editor-container');
 const docId = container?.dataset.docId || 'default';
 
-// ─── Yjs setup dengan XmlFragment ─────────────────────────────────────────────
+// ─── Yjs setup ────────────────────────────────────────────────────────────────
 const ydoc = new Y.Doc();
-
-// GUNAKAN XmlFragment BUKAN Text untuk HTML content
-// XmlFragment mendukung nested elements dan formatting
-const yxml = ydoc.get('content', Y.XmlFragment);
-
+const ytext = ydoc.getText('content');
 var editor = null;
 
 // State tracking
-let lastCommitted = '';
 let applyingRemote = false;
 let syncReady = false;
+let lastSyncedContent = '';  // Track konten terakhir yang sync dengan Y.js
 
 // ─── SignalR setup ─────────────────────────────────────────────────────────────
 const connection = new signalR.HubConnectionBuilder()
@@ -40,139 +36,24 @@ ydoc.on('update', (update, origin) => {
         .catch(err => console.error('[Collab] send failed:', err.message));
 });
 
-// ─── Helper: XmlFragment ↔ HTML conversion ────────────────────────────────────
-
-/**
- * Konversi HTML string ke Y.XmlFragment
- * Parse HTML dan buat struktur Y.XmlElement/Y.XmlText
- */
-function htmlToYxml(html, yxmlFragment) {
-    // Parse HTML ke DOM
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(`<div id="root">${html}</div>`, 'text/html');
-    const root = doc.getElementById('root');
-
-    // Clear existing content
-    yxmlFragment.delete(0, yxmlFragment.length);
-
-    // Convert DOM nodes ke Y.Xml nodes
-    function convertNode(node) {
-        if (node.nodeType === Node.TEXT_NODE) {
-            return new Y.XmlText(node.textContent);
-        } else if (node.nodeType === Node.ELEMENT_NODE) {
-            const element = node;
-            const tagName = element.tagName.toLowerCase();
-
-            // Skip wrapper div
-            if (tagName === 'div' && element.id === 'root') {
-                const children = [];
-                element.childNodes.forEach(child => {
-                    const converted = convertNode(child);
-                    if (converted) children.push(converted);
-                });
-                return children;
-            }
-
-            // Buat Y.XmlElement
-            const yElement = new Y.XmlElement(tagName);
-
-            // Copy attributes
-            Array.from(element.attributes).forEach(attr => {
-                yElement.setAttribute(attr.name, attr.value);
-            });
-
-            // Convert children
-            element.childNodes.forEach(child => {
-                const converted = convertNode(child);
-                if (converted) {
-                    if (Array.isArray(converted)) {
-                        converted.forEach(c => yElement.push([c]));
-                    } else {
-                        yElement.push([converted]);
-                    }
-                }
-            });
-
-            return yElement;
-        }
-        return null;
-    }
-
-    const result = convertNode(root);
-    if (Array.isArray(result)) {
-        result.forEach(node => {
-            if (node) yxmlFragment.push([node]);
-        });
-    }
-}
-
-/**
- * Konversi Y.XmlFragment ke HTML string
- */
-function yxmlToHtml(yxmlFragment) {
-    let html = '';
-
-    yxmlFragment.toArray().forEach(node => {
-        html += nodeToHtml(node);
-    });
-
-    return html;
-}
-
-/**
- * Konversi single Y.Xml node ke HTML string
- */
-function nodeToHtml(node) {
-    if (node instanceof Y.XmlText) {
-        return node.toString();
-    } else if (node instanceof Y.XmlElement) {
-        const tagName = node.nodeName;
-        const attrs = Array.from(node.getAttributes())
-            .map(([key, value]) => `${key}="${escapeHtml(value)}"`)
-            .join(' ');
-
-        const attrStr = attrs ? ` ${attrs}` : '';
-
-        const children = node.toArray()
-            .map(child => nodeToHtml(child))
-            .join('');
-
-        // Self-closing tags
-        const selfClosing = ['br', 'hr', 'img', 'input', 'meta', 'link'];
-        if (selfClosing.includes(tagName) && !children) {
-            return `<${tagName}${attrStr} />`;
-        }
-
-        return `<${tagName}${attrStr}>${children}</${tagName}>`;
-    }
-    return '';
-}
-
-function escapeHtml(str) {
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/"/g, '&quot;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-}
-
 // ─── Yjs → Editor ─────────────────────────────────────────────────────────────
-// Deep observer untuk perubahan apapun di XmlFragment
-yxml.observeDeep(events => {
-    // Skip jika perubahan dari local
-    const isLocal = events.some(e => e.transaction?.origin === 'local');
-    if (isLocal) return;
+ytext.observe(event => {
+    if (event.transaction.origin === 'local') return;
+    if (!editor || applyingRemote) return;
 
-    if (!editor || applyingRemote || !syncReady) return;
-
-    const yjsContent = yxmlToHtml(yxml);
-    lastCommitted = yjsContent;
+    const yjsContent = ytext.toString();
 
     applyingRemote = true;
     try {
-        if (editor.getContent() !== yjsContent) {
+        const currentContent = editor.getContent();
+        if (yjsContent !== currentContent) {
+            // Save cursor position before update
             const bm = editor.selection.getBookmark(2, true);
+            
             editor.setContent(yjsContent);
+            lastSyncedContent = yjsContent;
+            
+            // Restore cursor
             try { editor.selection.moveToBookmark(bm); } catch (_) {}
         }
     } finally {
@@ -192,15 +73,27 @@ connection.on('ReceiveUpdate', (arr) => {
 
 connection.on('SyncComplete', () => {
     syncReady = true;
-
-    const yjsContent = yxmlToHtml(yxml);
+    const yjsContent = ytext.toString();
     console.log('[Collab] sync ready, content length:', yjsContent.length);
 
-    lastCommitted = yjsContent;
+    lastSyncedContent = yjsContent;
 
-    if (editor && yjsContent && yjsContent !== editor.getContent()) {
-        applyingRemote = true;
-        try { editor.setContent(yjsContent); } finally { applyingRemote = false; }
+    if (editor) {
+        // Jika Yjs kosong, inisialisasi dengan konten editor
+        if (yjsContent.length === 0) {
+            const initialContent = editor.getContent();
+            if (initialContent) {
+                ydoc.transact(() => {
+                    ytext.insert(0, initialContent);
+                }, 'local');
+                lastSyncedContent = initialContent;
+            }
+        }
+        // Jika Yjs ada konten, update editor
+        else if (yjsContent !== editor.getContent()) {
+            applyingRemote = true;
+            try { editor.setContent(yjsContent); } finally { applyingRemote = false; }
+        }
     }
 });
 
@@ -212,6 +105,88 @@ connection.on('RequestFullState', async (targetId) => {
         console.error('[Collab] sendFullState error:', e);
     }
 });
+
+// ─── Diff function dengan proper rebase ────────────────────────────────────────
+
+/**
+ * Commit diff dari editor ke Y.js
+ * Penting: Gunakan Y.js state terbaru sebagai base, bukan lastSyncedContent
+ */
+function commitDiff(editorContent) {
+    // Selalu ambil state terbaru dari Y.js
+    const yjsContent = ytext.toString();
+    
+    // Jika Y.js kosong, insert semua
+    if (yjsContent.length === 0) {
+        ydoc.transact(() => {
+            ytext.insert(0, editorContent);
+        }, 'local');
+        lastSyncedContent = editorContent;
+        return;
+    }
+    
+    // Jika sama, skip
+    if (yjsContent === editorContent) {
+        return;
+    }
+    
+    // Hitung diff dari Y.js state ke editor content
+    // Ini memastikan kita meng-apply perubahan user ke atas state Y.js terbaru
+    const diff = computeDiff(yjsContent, editorContent);
+    
+    if (diff.ops.length > 0) {
+        ydoc.transact(() => {
+            // Apply ops dari belakang ke depan agar index tidak bergeser
+            for (let i = diff.ops.length - 1; i >= 0; i--) {
+                const op = diff.ops[i];
+                if (op.delete > 0) {
+                    ytext.delete(op.index, op.delete);
+                }
+                if (op.insert) {
+                    ytext.insert(op.index, op.insert);
+                }
+            }
+        }, 'local');
+    }
+    
+    lastSyncedContent = editorContent;
+}
+
+/**
+ * Compute diff operations dari oldStr ke newStr
+ * Mengembalikan array of operations
+ */
+function computeDiff(oldStr, newStr) {
+    const ops = [];
+    
+    // Cari common prefix
+    let prefix = 0;
+    const minLen = Math.min(oldStr.length, newStr.length);
+    while (prefix < minLen && oldStr[prefix] === newStr[prefix]) {
+        prefix++;
+    }
+    
+    // Cari common suffix
+    let oldSuffix = oldStr.length;
+    let newSuffix = newStr.length;
+    while (oldSuffix > prefix && newSuffix > prefix && oldStr[oldSuffix - 1] === newStr[newSuffix - 1]) {
+        oldSuffix--;
+        newSuffix--;
+    }
+    
+    const deleteCount = oldSuffix - prefix;
+    const insertStr = newStr.slice(prefix, newSuffix);
+    
+    if (deleteCount > 0 || insertStr.length > 0) {
+        ops.push({
+            index: prefix,
+            delete: deleteCount,
+            insert: insertStr
+        });
+    }
+    
+    return { ops };
+}
 
 // ─── TinyMCE setup ─────────────────────────────────────────────────────────────
 tinymce.init({
@@ -225,7 +200,7 @@ tinymce.init({
 
         ed.on('init', () => startConnection());
 
-        // Debounce untuk sync editor → Yjs
+        // Debounce untuk sync
         let debounce = null;
 
         ed.on('input keyup paste Change', () => {
@@ -236,19 +211,10 @@ tinymce.init({
                 if (applyingRemote || !syncReady || !isJoined) return;
 
                 const current = ed.getContent();
+                if (current === lastSyncedContent) return;
 
-                // Hanya sync jika benar-benar berbeda
-                if (current === lastCommitted) return;
-
-                // Update tracking
-                lastCommitted = current;
-
-                // Apply ke Y.XmlFragment
-                ydoc.transact(() => {
-                    htmlToYxml(current, yxml);
-                }, 'local');
-
-            }, 100);
+                commitDiff(current);
+            }, 150);
         });
     }
 });
