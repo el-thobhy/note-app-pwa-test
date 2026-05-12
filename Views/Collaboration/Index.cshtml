@@ -91,6 +91,33 @@
                         `;
                         $("#roomsContainer").append(card);
                     });
+                    const docEditor = `
+                     <div class="col-sm-6 col-lg-4 mb-4">
+                         <div class="card card-border-shadow-primary h-100 cursor-pointer"
+                              onclick="window.location.href='/Document/Editor'">
+                             <div class="card-body">
+                                 <div class="d-flex align-items-center mb-3">
+                                     <span class="avatar-initial rounded bg-label-success me-3 p-2">
+                                         <i class="bi bi-people-fill fs-5 text-success"></i>
+                                     </span>
+                                     <div>
+                                         <h5 class="mb-0 fw-semibold">Testing Editor</h5>
+                                         <small class="text-muted">For testing</small>
+                                     </div>
+                                 </div>
+                                 <div class="d-flex align-items-center justify-content-between">
+                                     <span class="badge bg-label-success rounded-pill">
+                                         <i class="bi bi-unlock me-1"></i>Public Room
+                                     </span>
+                                     <span class="text-primary small fw-semibold">
+                                         Masuk <i class="bi bi-arrow-right ms-1"></i>
+                                     </span>
+                                 </div>
+                             </div>
+                         </div>
+                     </div>
+                    `;
+                    $("#roomsContainer").append(docEditor);
                 },
                 error: function () {
                     $(".skeleton-card").remove();

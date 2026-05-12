@@ -1,7 +1,9 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 
 namespace NoteAppPWA.Controllers
 {
+    [Authorize]
     public class DocumentController : Controller
     {
         public IActionResult Index()

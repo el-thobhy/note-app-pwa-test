@@ -43,19 +43,22 @@
     </script>
 }
 
-<h2>Document: @ViewBag.DocId</h2>
+@* Fix #4: docId dari data attribute, bukan scrape dari DOM *@
+<div id="editor-container" data-doc-id="@ViewBag.DocId">
+    <h2>Document: @ViewBag.DocId</h2>
 
-<!-- TinyMCE Editor -->
-<textarea id="editor">Loading...</textarea>
+    <!-- TinyMCE Editor -->
+    <textarea id="editor"></textarea>
 
-<!-- User info -->
-<div id="user-info">
-    <input type="text" id="username" placeholder="Your name" value="User" />
-    <span id="status" style="color:green;">● Connected</span>
+    <!-- User info -->
+    <div id="user-info">
+        <input type="text" id="username" placeholder="Your name" value="User" />
+        <span id="collab-status" style="color:green;">● Connecting...</span>
+    </div>
+
+    <!-- Remote cursors container -->
+    <div id="cursors"></div>
 </div>
-
-<!-- Remote cursors container -->
-<div id="cursors"></div>
 
 @section Scripts {
     <script src="~/js/signalr.min.js"></script>
