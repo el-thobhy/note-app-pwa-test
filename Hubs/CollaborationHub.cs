@@ -16,13 +16,18 @@ namespace NoteApp.Hubs
     ///   - Kalau baseVersion < serverVersion → conflict, server merge pakai 3-way diff
     ///
     /// Merge strategy (3-way):
-    ///   - base = snapshot server text saat client's baseVersion
+    ///   - base = snapshot server text saat client's baseVersion (dari history)
     ///   - theirs = current server text (sudah include edits dari peer)
     ///   - mine = client's content
     ///   - diff(base, mine) → patch (apa yang client ubah)
     ///   - apply patch ke theirs → merged result
     ///
     /// Hasilnya: kedua perubahan (client + peer) preserved.
+    ///
+    /// Fix race conditions:
+    ///   1. JoinEntry baca state di dalam lock → consistent read
+    ///   2. DocState menyimpan version history (bukan hanya BaseSnapshot terakhir)
+    ///      sehingga merge selalu pakai base yang tepat sesuai baseVersion client
     /// </summary>
     public class CollaborationHub : Hub
     {
@@ -52,16 +57,32 @@ namespace NoteApp.Hubs
                 Color = GenerateColor(Context.ConnectionId)
             };
 
-            // Kirim current state ke client yang baru join
-            var state = _docStates.GetOrAdd(entryId, _ => new DocState());
-            await Clients.Caller.SendAsync("ReceiveState", state.Content, state.Version);
+            // FIX #1: Baca state di dalam lock supaya consistent read.
+            // Sebelumnya: baca Content dan Version di luar lock → bisa dapat
+            // Content versi baru tapi Version versi lama (atau sebaliknya)
+            // karena SendUpdate bisa nulis keduanya secara concurrent.
+            var lock_ = _locks.GetOrAdd(entryId, _ => new SemaphoreSlim(1, 1));
+            await lock_.WaitAsync();
+            string currentContent;
+            long currentVersion;
+            try
+            {
+                var state = _docStates.GetOrAdd(entryId, _ => new DocState());
+                currentContent = state.Content;
+                currentVersion = state.Version;
+            }
+            finally
+            {
+                lock_.Release();
+            }
 
+            await Clients.Caller.SendAsync("ReceiveState", currentContent, currentVersion);
             await BroadcastUsers(entryId);
         }
 
         /// <summary>
         /// Client kirim update.
-        /// 
+        ///
         /// Parameters:
         ///   - entryId: document ID
         ///   - content: full HTML content dari editor client
@@ -70,8 +91,8 @@ namespace NoteApp.Hubs
         /// Server logic:
         ///   1. Lock per entry (serialize semua writes)
         ///   2. Kalau baseVersion == serverVersion → no conflict, accept as-is
-        ///   3. Kalau baseVersion < serverVersion → conflict:
-        ///      - Ambil snapshot saat baseVersion (atau approximate)
+        ///   3. Kalau baseVersion &lt; serverVersion → conflict:
+        ///      - Ambil snapshot tepat di baseVersion dari history
         ///      - 3-way merge: diff(base, clientContent) → apply ke serverContent
         ///   4. Broadcast merged result ke SEMUA (termasuk pengirim)
         ///      Pengirim juga terima supaya editor-nya sync dengan server result
@@ -96,19 +117,23 @@ namespace NoteApp.Hubs
                 else
                 {
                     // Conflict — client's baseVersion < server version
-                    // Artinya ada edits dari peer yang client belum tahu
-                    // Server merge: apply client's changes on top of current server state
-                    merged = MergeContent(state.BaseSnapshot, content, state.Content);
+                    // Artinya ada edits dari peer yang client belum tahu.
+                    // FIX #2: Ambil snapshot tepat di baseVersion dari history,
+                    // bukan selalu pakai BaseSnapshot terakhir.
+                    // Sebelumnya: kalau 3+ client edit bersamaan, BaseSnapshot
+                    // sudah bergeser sehingga base yang dipakai salah.
+                    var baseText = state.GetSnapshot(baseVersion);
+                    merged = MergeContent(baseText, content, state.Content);
                 }
 
-                // Update server state
-                state.BaseSnapshot = state.Content; // simpan state sebelumnya sebagai base untuk merge berikutnya
+                // Simpan snapshot sebelum di-overwrite, lalu update state
+                state.SaveSnapshot(state.Version, state.Content);
                 state.Content = merged;
                 state.Version++;
 
-                // Broadcast ke SEMUA termasuk pengirim
+                // Broadcast ke SEMUA termasuk pengirim.
                 // Pengirim juga harus update editor-nya ke merged result
-                // Ini memastikan semua client punya state yang SAMA
+                // supaya semua client punya state yang SAMA.
                 await Clients.Group(GroupName(entryId))
                     .SendAsync("ReceiveState", merged, state.Version);
             }
@@ -120,12 +145,12 @@ namespace NoteApp.Hubs
 
         /// <summary>
         /// 3-way merge menggunakan diff-match-patch.
-        /// 
+        ///
         /// base: state server saat client mulai edit (sebelum peer edit)
         /// mine: content yang client kirim (client's version)
         /// theirs: current server state (sudah include peer edits)
-        /// 
-        /// Strategy: 
+        ///
+        /// Strategy:
         ///   1. diff(base, mine) → patches (apa yang client ubah dari base)
         ///   2. apply patches ke theirs → merged (client changes on top of peer changes)
         ///   3. Kalau patch gagal, fallback: coba sebaliknya
@@ -153,17 +178,10 @@ namespace NoteApp.Hubs
                 var merged = (string)result[0];
                 var success = (bool[])result[1];
 
-                // Cek apakah semua patch berhasil
                 var failCount = 0;
-                foreach (var s in success)
-                {
-                    if (!s) failCount++;
-                }
+                foreach (var s in success) if (!s) failCount++;
 
-                if (failCount == 0)
-                {
-                    return merged;
-                }
+                if (failCount == 0) return merged;
 
                 _logger.LogDebug("[Collab] Primary merge: {FailCount}/{Total} patches failed, trying reverse",
                     failCount, success.Length);
@@ -177,23 +195,10 @@ namespace NoteApp.Hubs
                 var success2 = (bool[])result2[1];
 
                 var failCount2 = 0;
-                foreach (var s in success2)
-                {
-                    if (!s) failCount2++;
-                }
+                foreach (var s in success2) if (!s) failCount2++;
 
-                if (failCount2 < failCount)
-                {
-                    return merged2;
-                }
-
-                // Kedua strategy ada yang gagal — pakai yang pertama (lebih banyak berhasil)
-                if (failCount <= failCount2)
-                {
-                    return merged;
-                }
-
-                return merged2;
+                // Pakai strategy yang lebih banyak berhasil
+                return failCount2 < failCount ? merged2 : merged;
             }
             catch (Exception ex)
             {
@@ -249,8 +254,46 @@ namespace NoteApp.Hubs
     public class DocState
     {
         public string Content { get; set; } = "";
-        public string BaseSnapshot { get; set; } = ""; // snapshot sebelum update terakhir
         public long Version { get; set; } = 0;
+
+        // FIX #2: Ganti single BaseSnapshot dengan version history.
+        // Menyimpan N snapshot terakhir supaya merge selalu bisa pakai
+        // base yang tepat sesuai baseVersion yang dikirim client.
+        private const int MaxSnapshots = 30;
+        private readonly Dictionary<long, string> _snapshots = new();
+
+        /// <summary>
+        /// Simpan snapshot untuk version tertentu.
+        /// Dipanggil sebelum Content di-overwrite.
+        /// </summary>
+        public void SaveSnapshot(long version, string content)
+        {
+            _snapshots[version] = content;
+
+            // Prune snapshot lama supaya memory tidak terus tumbuh
+            if (_snapshots.Count > MaxSnapshots)
+            {
+                var oldest = _snapshots.Keys.OrderBy(k => k).First();
+                _snapshots.Remove(oldest);
+            }
+        }
+
+        /// <summary>
+        /// Ambil snapshot terdekat yang &lt;= targetVersion.
+        /// Kalau tidak ada history sama sekali, return string kosong.
+        /// </summary>
+        public string GetSnapshot(long targetVersion)
+        {
+            if (_snapshots.Count == 0) return "";
+
+            // Cari snapshot dengan version <= targetVersion, ambil yang terbesar
+            var best = _snapshots.Keys
+                .Where(k => k <= targetVersion)
+                .OrderByDescending(k => k)
+                .FirstOrDefault(-1);
+
+            return best >= 0 ? _snapshots[best] : "";
+        }
     }
 
     public class CollabUser
