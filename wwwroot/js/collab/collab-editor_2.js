@@ -1,22 +1,17 @@
 /**
- * Collaborative Editor v2 - Differential Synchronization
+ * Collaborative Editor v2 — Server-Side Merge Only
  * 
- * Menggunakan "shadow copy" approach (Neil Fraser's Differential Sync):
- * - Client menyimpan "shadow" = copy terakhir yang server tahu
- * - Saat user edit: diff(shadow, current) → kirim PATCH ke server
- * - Saat terima patch dari peer: apply patch ke shadow DAN ke editor
- * - Shadow selalu sinkron dengan server state
+ * Client TIDAK melakukan merge apapun.
+ * Client hanya:
+ *   1. Kirim content + baseVersion ke server
+ *   2. Terima merged result dari server → replace editor
  *
- * Kenapa ini menghindari race condition:
- * - Patch bersifat INCREMENTAL, bukan full-replace
- * - 2 user ketik bersamaan → 2 patch yang BERBEDA dikirim
- * - Server apply patch A, lalu patch B → kedua perubahan preserved
- * - Tidak ada "siapa yang menang" — semua patch di-apply berurutan
+ * Server yang handle semua conflict resolution.
  *
  * Dependencies:
  *   - signalr.min.js (@microsoft/signalr)
- *   - diff_match_patch.js
  *   - TinyMCE (sudah diinisialisasi)
+ *   - diff_match_patch.js TIDAK diperlukan di client
  *
  * API:
  *   CollabEditor.attach(editor, options)
@@ -33,193 +28,129 @@
 var CollabEditor = (function () {
     'use strict';
 
-    // === STATE ===
     var _config = {};
-    var _dmp = null;
     var _connection = null;
     var _editor = null;
     var _attached = false;
     var _connected = false;
 
-    // Shadow copy: representasi terakhir yang server tahu
-    // Selalu di-update SETELAH patch berhasil dikirim (ack) atau diterima dari peer
-    var _shadow = '';
+    // Version terakhir yang kita terima dari server
+    var _version = 0;
 
-    // Apakah ada patch yang sedang in-flight ke server
+    // Flag: sedang apply content dari server (jangan trigger send)
+    var _applying = false;
+
+    // Flag: ada send yang sedang in-flight
     var _inflight = false;
-    // Patch text yang sedang in-flight (untuk recovery kalau gagal)
-    var _inflightPatch = null;
 
-    // Flag: ada perubahan baru yang belum dikirim
+    // Flag: ada perubahan lokal yang belum dikirim
     var _dirty = false;
 
-    // Flags
-    var _isRemoteUpdate = false;
+    // Content terakhir yang kita kirim atau terima dari server
+    // Dipakai untuk detect apakah editor benar-benar berubah
+    var _lastKnownContent = '';
+
+    // Typing
     var _isTyping = false;
+    var _typingTimer = null;
 
     // Timers
     var _sendDebounce = null;
     var _maxDelayTimer = null;
-    var _typingTimer = null;
 
-    // Bound handlers
+    // Event handlers
     var _boundHandlers = {};
 
     // Peers
     var _peers = new Map();
 
-    // === DEFAULTS ===
     var _defaults = {
         userName: 'Anonymous',
         avatar: '',
         documentId: 'default',
         hubUrl: '/hubs/collaboration',
-        debounceMs: 250,
-        maxDelayMs: 1500,
+        debounceMs: 300,
+        maxDelayMs: 2000,
         onUserListChanged: null,
         onConnectionChanged: null,
         onRemoteEdit: null,
         onLocalEdit: null
     };
 
-    // === PRIVATE METHODS ===
-
-    function _initDmp() {
-        if (typeof diff_match_patch === 'undefined') {
-            console.error('[CollabEditor] diff_match_patch is REQUIRED.');
-            return false;
-        }
-        _dmp = new diff_match_patch();
-        _dmp.Patch_Timeout = 2.0;
-        // Turunkan threshold supaya patch lebih toleran terhadap pergeseran posisi
-        _dmp.Patch_DeleteThreshold = 0.6;
-        _dmp.Match_Threshold = 0.6;
-        _dmp.Match_Distance = 1500;
-        return true;
-    }
+    // === PRIVATE ===
 
     function _buildConnection() {
         if (typeof signalR === 'undefined') {
-            console.error('[CollabEditor] @microsoft/signalr not loaded.');
+            console.error('[CollabEditor] signalR not loaded.');
             return false;
         }
-
         _connection = new signalR.HubConnectionBuilder()
             .withUrl(_config.hubUrl)
             .withAutomaticReconnect([0, 1000, 3000, 5000])
             .build();
-
         _registerHandlers();
         return true;
     }
 
     function _registerHandlers() {
 
-        // === ReceiveDocState: Full state saat join atau resync ===
-        _connection.on('ReceiveDocState', function (content, version) {
+        /**
+         * ReceiveState: Server kirim merged content + version.
+         * Ini diterima saat:
+         *   - Join (initial state)
+         *   - Setelah kita SendUpdate (ack + merged result)
+         *   - Setelah peer SendUpdate (broadcast merged result)
+         *
+         * Client SELALU replace editor content dengan ini.
+         * Tidak ada merge di client.
+         */
+        _connection.on('ReceiveState', function (content, version) {
             if (!_editor) return;
 
-            _isRemoteUpdate = true;
-            try {
-                // Reset shadow ke server state
-                _shadow = content || '';
+            // Update version
+            _version = version;
 
-                // Kalau editor punya perubahan lokal yang belum dikirim,
-                // kita perlu preserve-nya
-                var currentContent = _editor.getContent();
-                if (currentContent !== _shadow && _dirty) {
-                    // Ada local edits — jangan overwrite, biarkan dirty flag
-                    // Nanti _doSend akan diff dari shadow baru ke current
-                    // Ini otomatis "merge" karena patch = diff(shadow_baru, current)
-                    // yang hanya berisi perubahan lokal
-                } else {
-                    _editor.setContent(_shadow);
-                    _dirty = false;
-                }
-            } finally {
-                _isRemoteUpdate = false;
-            }
-
-            _fireCallback('onRemoteEdit');
-        });
-
-        // === ReceivePatch: Patch dari peer ===
-        _connection.on('ReceivePatch', function (patchText, version) {
-            if (!_editor || !patchText) return;
-
-            _isRemoteUpdate = true;
-            try {
-                var patches = _dmp.patch_fromText(patchText);
-
-                // 1. Apply patch ke shadow
-                var shadowResult = _dmp.patch_apply(patches, _shadow);
-                var newShadow = shadowResult[0];
-                var shadowSuccess = shadowResult[1];
-
-                // 2. Apply patch ke editor content
-                var currentContent = _editor.getContent();
-                var editorResult = _dmp.patch_apply(patches, currentContent);
-                var newEditorContent = editorResult[0];
-                var editorSuccess = editorResult[1];
-
-                // Update shadow (selalu, karena server sudah apply)
-                _shadow = newShadow;
-
-                // Update editor kalau patch berhasil dan content berubah
-                if (newEditorContent !== currentContent) {
-                    var bookmark = null;
-                    try { bookmark = _editor.selection.getBookmark(2, true); } catch (e) { }
-
-                    _editor.setContent(newEditorContent);
-
-                    if (bookmark) {
-                        try { _editor.selection.moveToBookmark(bookmark); } catch (e) { }
-                    }
-                }
-            } finally {
-                _isRemoteUpdate = false;
-            }
-
-            _fireCallback('onRemoteEdit');
-        });
-
-        // === PatchAck: Server accepted our patch ===
-        _connection.on('PatchAck', function (version) {
-            _inflight = false;
-            _inflightPatch = null;
-
-            // Kalau ada perubahan baru yang terjadi saat in-flight, kirim sekarang
-            if (_dirty) {
-                _doSend();
-            }
-        });
-
-        // === FullResync: Server gagal apply patch kita, kirim full state ===
-        _connection.on('FullResync', function (content, version) {
-            _isRemoteUpdate = true;
-            try {
+            // Kalau content sama dengan yang di editor, skip update (avoid cursor jump)
+            var currentContent = _editor.getContent();
+            if (content === currentContent) {
+                _lastKnownContent = content;
                 _inflight = false;
-                _inflightPatch = null;
-
-                // Reset shadow ke server state
-                _shadow = content || '';
-
-                var currentContent = _editor.getContent();
-                if (currentContent !== _shadow) {
-                    // Ada local edits — set dirty supaya dikirim ulang
-                    // Patch berikutnya = diff(shadow_baru, current) = hanya local changes
-                    _dirty = true;
+                // Kalau ada pending changes, kirim sekarang
+                if (_dirty) {
                     _scheduleSend();
-                } else {
-                    _editor.setContent(_shadow);
-                    _dirty = false;
+                }
+                return;
+            }
+
+            // Replace editor content
+            _applying = true;
+            try {
+                // Simpan cursor position
+                var bookmark = null;
+                try { bookmark = _editor.selection.getBookmark(2, true); } catch (e) { }
+
+                _editor.setContent(content);
+                _lastKnownContent = content;
+
+                // Restore cursor
+                if (bookmark) {
+                    try { _editor.selection.moveToBookmark(bookmark); } catch (e) { }
                 }
             } finally {
-                _isRemoteUpdate = false;
+                _applying = false;
             }
+
+            // Clear inflight flag
+            _inflight = false;
+
+            // Kalau ada pending changes yang terjadi saat inflight, kirim sekarang
+            if (_dirty) {
+                _scheduleSend();
+            }
+
+            _fireCallback('onRemoteEdit');
         });
 
-        // === Awareness ===
         _connection.on('ReceiveAwareness', function (data) {
             if (data.isTyping) {
                 _showPeerTyping(data.connectionId, data.displayName, data.color);
@@ -228,13 +159,10 @@ var CollabEditor = (function () {
             }
         });
 
-        // === Online users ===
         _connection.on('UsersOnline', function (users) {
             _renderOnlineUsers(users);
             users.forEach(function (u) {
-                if (!_peers.has(u.connectionId)) {
-                    _peers.set(u.connectionId, { displayName: u.displayName, color: u.color });
-                }
+                _peers.set(u.connectionId, { displayName: u.displayName, color: u.color });
             });
             _fireCallback('onUserListChanged', users);
         });
@@ -254,7 +182,6 @@ var CollabEditor = (function () {
         _connection.onreconnected(function () {
             _connected = true;
             _inflight = false;
-            _inflightPatch = null;
             _connection.invoke('JoinEntry', _config.documentId, _config.userName, _config.avatar);
             _fireConnectionChanged('connected');
         });
@@ -270,19 +197,6 @@ var CollabEditor = (function () {
         });
     }
 
-    function _fireConnectionChanged(status) {
-        _showStatus(status);
-        if (typeof _config.onConnectionChanged === 'function') {
-            _config.onConnectionChanged(status);
-        }
-    }
-
-    function _fireCallback(name, data) {
-        if (typeof _config[name] === 'function') {
-            _config[name](data);
-        }
-    }
-
     function _scheduleSend() {
         clearTimeout(_sendDebounce);
         _sendDebounce = setTimeout(function () {
@@ -291,86 +205,56 @@ var CollabEditor = (function () {
     }
 
     /**
-     * Core sync: diff shadow vs current editor → kirim patch ke server.
-     * 
-     * Ini adalah inti dari Differential Sync:
-     * - shadow = apa yang server terakhir tahu
-     * - current = apa yang user lihat sekarang
-     * - diff(shadow, current) = perubahan yang HANYA user ini buat
-     * - Kirim patch ini ke server
-     * - Update shadow = current (karena setelah ack, server tahu state ini)
+     * Kirim current editor content ke server.
+     * Server akan merge kalau ada conflict, lalu broadcast result ke semua.
      */
     function _doSend() {
         if (!_connected || !_editor) return;
 
-        // In-flight guard: tunggu ack sebelum kirim lagi
+        // In-flight guard: hanya 1 request at a time
         if (_inflight) {
-            _dirty = true; // tandai supaya dikirim setelah ack
+            _dirty = true;
             return;
         }
 
-        var currentContent = _editor.getContent();
+        var content = _editor.getContent();
 
-        // Kalau tidak ada perubahan dari shadow, skip
-        if (currentContent === _shadow) {
+        // Skip kalau content tidak berubah dari terakhir kali
+        if (content === _lastKnownContent) {
             _dirty = false;
             return;
         }
 
-        // Buat diff: shadow → current
-        var diffs = _dmp.diff_main(_shadow, currentContent);
-        if (diffs.length > 2) {
-            _dmp.diff_cleanupEfficiency(diffs);
-        }
-        var patches = _dmp.patch_make(_shadow, diffs);
-        var patchText = _dmp.patch_toText(patches);
-
-        if (!patchText || patches.length === 0) {
-            _dirty = false;
-            return;
-        }
-
-        // Update shadow SEKARANG (optimistic) — karena kita expect server akan accept
-        // Kalau server reject (FullResync), shadow akan di-reset
-        _shadow = currentContent;
-        _dirty = false;
         _inflight = true;
-        _inflightPatch = patchText;
+        _dirty = false;
+        _lastKnownContent = content;
 
-        // Clear max delay timer
+        // Clear max delay
         if (_maxDelayTimer) {
             clearTimeout(_maxDelayTimer);
             _maxDelayTimer = null;
         }
 
-        _connection.invoke('SendPatch', _config.documentId, patchText)
+        _connection.invoke('SendUpdate', _config.documentId, content, _version)
             .catch(function (err) {
-                console.warn('[CollabEditor] SendPatch failed:', err);
-                // Rollback shadow — kita tidak tahu apakah server apply atau tidak
-                // Safest: request full resync
+                console.warn('[CollabEditor] SendUpdate failed:', err);
                 _inflight = false;
-                _inflightPatch = null;
                 _dirty = true;
-                // Shadow tetap di posisi lama? Tidak, karena kita sudah update.
-                // Kirim full content sebagai fallback
-                _connection.invoke('SendFullContent', _config.documentId, currentContent)
-                    .then(function () {
-                        _shadow = currentContent;
-                        _dirty = false;
-                    })
-                    .catch(function () { });
+                // Retry
+                setTimeout(function () { _scheduleSend(); }, 1000);
             });
 
         _fireCallback('onLocalEdit');
     }
 
     function _onContentChange() {
-        if (_isRemoteUpdate || !_attached || !_editor || !_connected) return;
+        if (_applying || !_attached || !_editor || !_connected) return;
+
+        var content = _editor.getContent();
+        if (content === _lastKnownContent) return;
 
         _dirty = true;
         _setTyping(true);
-
-        // Schedule send (debounced)
         _scheduleSend();
 
         // Max delay: force send
@@ -424,29 +308,39 @@ var CollabEditor = (function () {
         _boundHandlers = {};
     }
 
-    // === UI HELPERS ===
+    function _fireConnectionChanged(status) {
+        _showStatus(status);
+        if (typeof _config.onConnectionChanged === 'function') {
+            _config.onConnectionChanged(status);
+        }
+    }
+
+    function _fireCallback(name, data) {
+        if (typeof _config[name] === 'function') {
+            _config[name](data);
+        }
+    }
+
+    // === UI ===
 
     function _showPeerTyping(connectionId, displayName, color) {
         var container = document.getElementById('collab-typing-indicators');
         if (!container) return;
-
         var id = 'typing-' + connectionId.replace(/[^a-z0-9]/gi, '');
         var el = document.getElementById(id);
-
         if (!el) {
             el = document.createElement('span');
             el.id = id;
             el.style.cssText =
-                'background:' + color + '22; border:1px solid ' + color + '; color:' + color + ';' +
-                'border-radius:12px; padding:2px 10px; font-size:0.75rem;' +
-                'font-weight:600; display:inline-flex; align-items:center; gap:5px;';
+                'background:' + color + '22;border:1px solid ' + color + ';color:' + color +
+                ';border-radius:12px;padding:2px 10px;font-size:0.75rem;font-weight:600;' +
+                'display:inline-flex;align-items:center;gap:5px;';
             el.innerHTML =
-                '<span style="width:7px;height:7px;border-radius:50%;background:' + color + ';' +
-                'display:inline-block;animation:collab-pulse 1s infinite;"></span>' +
+                '<span style="width:7px;height:7px;border-radius:50%;background:' + color +
+                ';display:inline-block;animation:collab-pulse 1s infinite;"></span>' +
                 displayName + ' mengetik...';
             container.appendChild(el);
         }
-
         var peer = _peers.get(connectionId) || {};
         clearTimeout(peer.typingTimer);
         peer.typingTimer = setTimeout(function () { _hidePeerTyping(connectionId); }, 3000);
@@ -462,7 +356,6 @@ var CollabEditor = (function () {
     function _renderOnlineUsers(users) {
         var container = document.getElementById('collab-users');
         if (!container) return;
-
         container.innerHTML = '';
         users.forEach(function (user) {
             var el = document.createElement('div');
@@ -470,7 +363,6 @@ var CollabEditor = (function () {
             el.title = user.displayName;
             el.style.borderColor = user.color;
             el.style.outline = '2px solid ' + user.color;
-
             if (user.avatar) {
                 el.innerHTML = '<img src="' + user.avatar + '" alt="' + user.displayName + '" />';
             } else {
@@ -480,7 +372,6 @@ var CollabEditor = (function () {
             }
             container.appendChild(el);
         });
-
         var counter = document.getElementById('collab-count');
         if (counter) {
             counter.textContent = users.length > 1
@@ -506,18 +397,17 @@ var CollabEditor = (function () {
     function _resetState() {
         _editor = null;
         _connection = null;
-        _dmp = null;
         _attached = false;
         _connected = false;
-        _shadow = '';
+        _version = 0;
+        _applying = false;
         _inflight = false;
-        _inflightPatch = null;
         _dirty = false;
-        _isRemoteUpdate = false;
+        _lastKnownContent = '';
         _isTyping = false;
+        _typingTimer = null;
         _sendDebounce = null;
         _maxDelayTimer = null;
-        _typingTimer = null;
         _boundHandlers = {};
         _peers = new Map();
     }
@@ -525,25 +415,19 @@ var CollabEditor = (function () {
     // === PUBLIC API ===
     return {
         attach: function (editor, options) {
-            if (!editor) {
-                console.error('[CollabEditor] Editor instance is required.');
-                return;
-            }
-
+            if (!editor) { console.error('[CollabEditor] Editor required.'); return; }
             if (_attached) this.detach();
 
             _config = Object.assign({}, _defaults, options);
             _editor = editor;
-
-            if (!_initDmp()) return;
             if (!_buildConnection()) return;
 
-            _shadow = _editor.getContent();
+            _lastKnownContent = _editor.getContent();
             _bindEditorEvents();
             _attached = true;
             _startConnection();
 
-            console.log('[CollabEditor] Attached (DiffSync) | Doc: ' + _config.documentId + ' | User: ' + _config.userName);
+            console.log('[CollabEditor] Attached (ServerMerge) | Doc: ' + _config.documentId);
         },
 
         detach: function () {
@@ -554,24 +438,20 @@ var CollabEditor = (function () {
             _unbindEditorEvents();
             if (_connection) _connection.stop();
             _resetState();
-            console.log('[CollabEditor] Detached.');
         },
 
         getContent: function () {
-            if (!_attached || !_editor) return '';
-            return _editor.getContent();
+            return (_attached && _editor) ? _editor.getContent() : '';
         },
 
         setContent: function (content) {
             if (!_attached || !_editor) return;
-            _isRemoteUpdate = true;
+            _applying = true;
             _editor.setContent(content);
-            _isRemoteUpdate = false;
-            // Kirim full content ke server
+            _applying = false;
+            _lastKnownContent = content;
             if (_connected) {
-                _connection.invoke('SendFullContent', _config.documentId, content)
-                    .then(function () { _shadow = content; })
-                    .catch(function () { });
+                _connection.invoke('SendUpdate', _config.documentId, content, _version).catch(function () { });
             }
         },
 
@@ -580,8 +460,6 @@ var CollabEditor = (function () {
         reconnect: function () { if (_connection && !_connected) _startConnection(); },
         isConnected: function () { return _connected; },
         isReady: function () { return _attached; },
-
-        get _applyingRemote() { return _isRemoteUpdate; }
+        get _applyingRemote() { return _applying; }
     };
-
 })();

@@ -1,21 +1,28 @@
 using Microsoft.AspNetCore.SignalR;
+using DiffMatchPatch;
 using System.Collections.Concurrent;
 
 namespace NoteApp.Hubs
 {
     /// <summary>
-    /// SignalR hub untuk real-time collaboration per entry.
+    /// Real-time collaboration hub — SERVER-SIDE MERGE ONLY.
     ///
-    /// Strategi: Differential Synchronization (Neil Fraser style)
-    /// - Server menyimpan "server text" per entry
-    /// - Client kirim PATCH (diff dari shadow → current)
-    /// - Server apply patch ke server text, lalu broadcast patch ke peers
-    /// - Peers apply patch ke shadow DAN editor mereka
-    /// - Ini menghindari race condition karena patch bersifat incremental,
-    ///   bukan full-replace. Dua patch dari 2 user bisa di-apply berurutan
-    ///   tanpa saling overwrite.
+    /// Client sangat simple:
+    ///   - Kirim: SendUpdate(entryId, content, baseVersion)
+    ///   - Terima: ReceiveState(content, version) → replace editor
     ///
-    /// Fallback: kalau patch gagal, server kirim full state untuk resync.
+    /// Server yang handle semua merge:
+    ///   - Kalau baseVersion == serverVersion → no conflict, accept langsung
+    ///   - Kalau baseVersion < serverVersion → conflict, server merge pakai 3-way diff
+    ///
+    /// Merge strategy (3-way):
+    ///   - base = snapshot server text saat client's baseVersion
+    ///   - theirs = current server text (sudah include edits dari peer)
+    ///   - mine = client's content
+    ///   - diff(base, mine) → patch (apa yang client ubah)
+    ///   - apply patch ke theirs → merged result
+    ///
+    /// Hasilnya: kedua perubahan (client + peer) preserved.
     /// </summary>
     public class CollaborationHub : Hub
     {
@@ -46,70 +53,64 @@ namespace NoteApp.Hubs
             };
 
             // Kirim current state ke client yang baru join
-            if (_docStates.TryGetValue(entryId, out var state) && !string.IsNullOrEmpty(state.Content))
-            {
-                await Clients.Caller.SendAsync("ReceiveDocState", state.Content, state.Version);
-            }
+            var state = _docStates.GetOrAdd(entryId, _ => new DocState());
+            await Clients.Caller.SendAsync("ReceiveState", state.Content, state.Version);
 
             await BroadcastUsers(entryId);
         }
 
         /// <summary>
-        /// Client kirim patch (diff text dari diff-match-patch).
-        /// Server apply patch ke server text, lalu broadcast ke peers.
+        /// Client kirim update.
         /// 
-        /// Kalau patch gagal apply, server kirim full state ke pengirim untuk resync.
+        /// Parameters:
+        ///   - entryId: document ID
+        ///   - content: full HTML content dari editor client
+        ///   - baseVersion: version yang client pakai sebagai starting point
+        ///
+        /// Server logic:
+        ///   1. Lock per entry (serialize semua writes)
+        ///   2. Kalau baseVersion == serverVersion → no conflict, accept as-is
+        ///   3. Kalau baseVersion < serverVersion → conflict:
+        ///      - Ambil snapshot saat baseVersion (atau approximate)
+        ///      - 3-way merge: diff(base, clientContent) → apply ke serverContent
+        ///   4. Broadcast merged result ke SEMUA (termasuk pengirim)
+        ///      Pengirim juga terima supaya editor-nya sync dengan server result
         /// </summary>
-        public async Task SendPatch(string entryId, string patchText)
+        public async Task SendUpdate(string entryId, string content, long baseVersion)
         {
-            if (string.IsNullOrEmpty(patchText)) return;
+            if (content == null) return;
 
             var lock_ = _locks.GetOrAdd(entryId, _ => new SemaphoreSlim(1, 1));
             await lock_.WaitAsync();
             try
             {
-                var current = _docStates.GetOrAdd(entryId, _ => new DocState());
-                var serverContent = current.Content ?? "";
+                var state = _docStates.GetOrAdd(entryId, _ => new DocState());
 
-                // Apply patch ke server text
-                var dmp = new DiffMatchPatch.diff_match_patch();
-                var patches = dmp.patch_fromText(patchText);
-                var result = dmp.patch_apply(patches, serverContent);
-                var newContent = (string)result[0];
-                var success = (bool[])result[1];
+                string merged;
 
-                // Cek apakah semua patch berhasil
-                var allSuccess = true;
-                foreach (var s in success)
+                if (state.Version == 0 || baseVersion >= state.Version)
                 {
-                    if (!s) { allSuccess = false; break; }
-                }
-
-                if (allSuccess && newContent != serverContent)
-                {
-                    // Patch berhasil — update server state
-                    current.Content = newContent;
-                    current.Version++;
-
-                    // Broadcast patch ke peers (bukan pengirim)
-                    // Peers akan apply patch ini ke shadow dan editor mereka
-                    await Clients.OthersInGroup(GroupName(entryId))
-                        .SendAsync("ReceivePatch", patchText, current.Version);
-
-                    // Ack ke pengirim: patch accepted, kirim version baru
-                    await Clients.Caller.SendAsync("PatchAck", current.Version);
-                }
-                else if (!allSuccess)
-                {
-                    // Patch gagal — kirim full state ke pengirim untuk resync
-                    _logger.LogWarning("[Collab] Patch failed for {EntryId}, sending full resync", entryId);
-                    await Clients.Caller.SendAsync("FullResync", current.Content, current.Version);
+                    // No conflict — client is up to date, accept content as-is
+                    merged = content;
                 }
                 else
                 {
-                    // Patch berhasil tapi content tidak berubah (no-op)
-                    await Clients.Caller.SendAsync("PatchAck", current.Version);
+                    // Conflict — client's baseVersion < server version
+                    // Artinya ada edits dari peer yang client belum tahu
+                    // Server merge: apply client's changes on top of current server state
+                    merged = MergeContent(state.BaseSnapshot, content, state.Content);
                 }
+
+                // Update server state
+                state.BaseSnapshot = state.Content; // simpan state sebelumnya sebagai base untuk merge berikutnya
+                state.Content = merged;
+                state.Version++;
+
+                // Broadcast ke SEMUA termasuk pengirim
+                // Pengirim juga harus update editor-nya ke merged result
+                // Ini memastikan semua client punya state yang SAMA
+                await Clients.Group(GroupName(entryId))
+                    .SendAsync("ReceiveState", merged, state.Version);
             }
             finally
             {
@@ -118,60 +119,88 @@ namespace NoteApp.Hubs
         }
 
         /// <summary>
-        /// Client kirim full content (untuk initial set atau force sync).
+        /// 3-way merge menggunakan diff-match-patch.
+        /// 
+        /// base: state server saat client mulai edit (sebelum peer edit)
+        /// mine: content yang client kirim (client's version)
+        /// theirs: current server state (sudah include peer edits)
+        /// 
+        /// Strategy: 
+        ///   1. diff(base, mine) → patches (apa yang client ubah dari base)
+        ///   2. apply patches ke theirs → merged (client changes on top of peer changes)
+        ///   3. Kalau patch gagal, fallback: coba sebaliknya
+        ///   4. Kalau masih gagal, prefer theirs (server wins, data tidak hilang)
         /// </summary>
-        public async Task SendFullContent(string entryId, string content)
+        private string MergeContent(string baseText, string mine, string theirs)
         {
-            if (string.IsNullOrEmpty(content)) return;
+            // Edge cases
+            if (mine == theirs) return mine;
+            if (mine == baseText) return theirs; // client tidak ubah apa-apa
+            if (theirs == baseText) return mine; // server tidak berubah (seharusnya tidak terjadi)
+            if (string.IsNullOrEmpty(baseText)) return theirs; // no base, server wins
 
-            var lock_ = _locks.GetOrAdd(entryId, _ => new SemaphoreSlim(1, 1));
-            await lock_.WaitAsync();
             try
             {
-                var current = _docStates.GetOrAdd(entryId, _ => new DocState());
-                current.Content = content;
-                current.Version++;
+                var dmp = new diff_match_patch();
+                dmp.Match_Threshold = 0.4f;
+                dmp.Match_Distance = 2000;
 
-                // Broadcast full state ke peers
-                await Clients.OthersInGroup(GroupName(entryId))
-                    .SendAsync("ReceiveDocState", content, current.Version);
+                // Strategy 1: Apply client's changes on top of server state
+                var diffs = dmp.diff_main(baseText, mine);
+                if (diffs.Count > 2) dmp.diff_cleanupSemantic(diffs);
+                var patches = dmp.patch_make(baseText, diffs);
+                var result = dmp.patch_apply(patches, theirs);
+                var merged = (string)result[0];
+                var success = (bool[])result[1];
 
-                await Clients.Caller.SendAsync("PatchAck", current.Version);
+                // Cek apakah semua patch berhasil
+                var failCount = 0;
+                foreach (var s in success)
+                {
+                    if (!s) failCount++;
+                }
+
+                if (failCount == 0)
+                {
+                    return merged;
+                }
+
+                _logger.LogDebug("[Collab] Primary merge: {FailCount}/{Total} patches failed, trying reverse",
+                    failCount, success.Length);
+
+                // Strategy 2: Apply server's changes on top of client content
+                var diffs2 = dmp.diff_main(baseText, theirs);
+                if (diffs2.Count > 2) dmp.diff_cleanupSemantic(diffs2);
+                var patches2 = dmp.patch_make(baseText, diffs2);
+                var result2 = dmp.patch_apply(patches2, mine);
+                var merged2 = (string)result2[0];
+                var success2 = (bool[])result2[1];
+
+                var failCount2 = 0;
+                foreach (var s in success2)
+                {
+                    if (!s) failCount2++;
+                }
+
+                if (failCount2 < failCount)
+                {
+                    return merged2;
+                }
+
+                // Kedua strategy ada yang gagal — pakai yang pertama (lebih banyak berhasil)
+                if (failCount <= failCount2)
+                {
+                    return merged;
+                }
+
+                return merged2;
             }
-            finally
+            catch (Exception ex)
             {
-                lock_.Release();
+                _logger.LogWarning(ex, "[Collab] Merge exception, using server content (theirs)");
+                return theirs;
             }
         }
-
-        /// <summary>
-        /// BACKWARD COMPAT: Client lama (collaboration.js) masih pakai SendHtmlUpdate.
-        /// Ini menerima full content dan broadcast sebagai ReceiveUpdate + UpdateAck.
-        /// </summary>
-        public async Task SendHtmlUpdate(string entryId, string htmlContent, long clientVersion)
-        {
-            if (string.IsNullOrEmpty(htmlContent)) return;
-
-            var lock_ = _locks.GetOrAdd(entryId, _ => new SemaphoreSlim(1, 1));
-            await lock_.WaitAsync();
-            try
-            {
-                var current = _docStates.GetOrAdd(entryId, _ => new DocState());
-                var newVersion = current.Version + 1;
-                current.Content = htmlContent;
-                current.Version = newVersion;
-
-                await Clients.OthersInGroup(GroupName(entryId))
-                    .SendAsync("ReceiveUpdate", htmlContent, newVersion);
-
-                await Clients.Caller.SendAsync("UpdateAck", newVersion, htmlContent);
-            }
-            finally
-            {
-                lock_.Release();
-            }
-        }
-
 
         public async Task SendAwareness(string entryId, AwarenessData awarenessData)
         {
@@ -220,6 +249,7 @@ namespace NoteApp.Hubs
     public class DocState
     {
         public string Content { get; set; } = "";
+        public string BaseSnapshot { get; set; } = ""; // snapshot sebelum update terakhir
         public long Version { get; set; } = 0;
     }
 
