@@ -1,10 +1,32 @@
 /**
- * Collaborative Editor v2 - SignalR (@microsoft/signalr) + diff-match-patch
+ * Collaborative Editor v2 - Race-condition-free real-time collaboration
  * 
- * Library reusable untuk menambahkan real-time collaboration ke TinyMCE editor
- * yang SUDAH diinisialisasi dengan config sendiri.
+ * SignalR (@microsoft/signalr) + diff-match-patch
+ * 
+ * ============================================================
+ * STRATEGI ANTI RACE CONDITION:
+ * ============================================================
+ * 
+ * 1. IN-FLIGHT GUARD: Hanya 1 request boleh in-flight ke server.
+ *    Kalau ada request in-flight, perubahan baru di-queue sebagai pending.
+ *    Setelah ack/resync diterima, baru kirim pending berikutnya.
  *
- * Dependencies:
+ * 2. STRICT VERSION: Server pakai strict equality (baseVersion == serverVersion).
+ *    Kalau 2 client kirim bersamaan, yang kedua akan di-reject (Resync).
+ *    Client yang di-reject harus merge ulang di atas state terbaru.
+ *
+ * 3. CONFIRMED BASE: Merge selalu pakai _confirmedContent sebagai base.
+ *    _confirmedContent HANYA di-update setelah UpdateAck dari server.
+ *    Ini memastikan patch yang dibuat selalu relatif terhadap state yang benar.
+ *
+ * 4. RESYNC RECOVERY: Saat server reject (Resync), client:
+ *    - Update _confirmedContent dan _confirmedVersion ke state server
+ *    - Merge ulang pending di atas state baru
+ *    - Kirim ulang otomatis
+ *
+ * ============================================================
+ * DEPENDENCIES:
+ * ============================================================
  *   - signalr.min.js (@microsoft/signalr)
  *   - diff_match_patch.js
  *   - TinyMCE (sudah diinisialisasi)
@@ -13,15 +35,8 @@
  * CARA PAKAI:
  * ============================================================
  * 
- * 1. Inisialisasi TinyMCE seperti biasa dengan config kamu sendiri.
- * 2. Di dalam setup > editor.on('init'), panggil CollabEditor.attach()
- *
- * Contoh:
- *
  *   tinymce.init({
- *       selector: '.textarea-editor',
- *       plugins: '...',
- *       toolbar: '...',
+ *       selector: '#editor',
  *       setup: function(editor) {
  *           editor.on('init', function() {
  *               CollabEditor.attach(editor, {
@@ -29,12 +44,8 @@
  *                   avatar: '/img/budi.png',
  *                   documentId: 'entry-123',
  *                   hubUrl: '/hubs/collaboration',
- *                   debounceMs: 300,
- *                   maxDelayMs: 2000,
- *                   onUserListChanged: function(users) { },
- *                   onConnectionChanged: function(status) { },
- *                   onRemoteEdit: function() { },
- *                   onLocalEdit: function() { }
+ *                   debounceMs: 200,
+ *                   maxDelayMs: 1500
  *               });
  *           });
  *       }
@@ -44,15 +55,15 @@
  * PUBLIC API:
  * ============================================================
  * 
- *   CollabEditor.attach(editor, options)  - Attach collaboration ke editor
- *   CollabEditor.detach()                 - Lepas collaboration & disconnect
- *   CollabEditor.getContent()             - Ambil konten editor
- *   CollabEditor.setContent(html)         - Set konten editor (broadcast ke peers)
- *   CollabEditor.disconnect()             - Putus koneksi SignalR
- *   CollabEditor.reconnect()              - Sambung ulang SignalR
- *   CollabEditor.isConnected()            - Cek status koneksi
- *   CollabEditor.isReady()                - Cek apakah sudah attached & ready
- *   CollabEditor.sendChanges()            - Force kirim perubahan sekarang
+ *   CollabEditor.attach(editor, options)
+ *   CollabEditor.detach()
+ *   CollabEditor.getContent()
+ *   CollabEditor.setContent(html)
+ *   CollabEditor.disconnect()
+ *   CollabEditor.reconnect()
+ *   CollabEditor.isConnected()
+ *   CollabEditor.isReady()
+ *   CollabEditor.sendChanges()
  */
 
 var CollabEditor = (function () {
@@ -66,12 +77,20 @@ var CollabEditor = (function () {
     var _attached = false;
     var _connected = false;
 
-    // Server-authoritative state
-    var _serverContent = '';
-    var _serverVersion = 0;
+    // === CONFIRMED STATE (hanya update setelah ack dari server) ===
+    // Ini adalah "ground truth" — base untuk semua merge operations
+    var _confirmedContent = '';
+    var _confirmedVersion = 0;
+
+    // === IN-FLIGHT STATE ===
+    // Content yang sedang dikirim ke server, menunggu ack/resync
+    var _inflightContent = null;
+    var _inflightVersion = null; // baseVersion yang dikirim
+
+    // === PENDING STATE ===
+    // Perubahan lokal yang belum dikirim (karena ada in-flight)
+    // null = tidak ada perubahan baru sejak terakhir kirim
     var _pendingContent = null;
-    var _mergeBase = null;
-    var _lastSentContent = undefined;
 
     // Flags
     var _isRemoteUpdate = false;
@@ -94,8 +113,8 @@ var CollabEditor = (function () {
         avatar: '',
         documentId: 'default',
         hubUrl: '/hubs/collaboration',
-        debounceMs: 300,
-        maxDelayMs: 2000,
+        debounceMs: 200,
+        maxDelayMs: 1500,
         onUserListChanged: null,
         onConnectionChanged: null,
         onRemoteEdit: null,
@@ -106,36 +125,71 @@ var CollabEditor = (function () {
 
     function _initDiffMatchPatch() {
         if (typeof diff_match_patch === 'undefined') {
-            console.warn('[CollabEditor] diff_match_patch not loaded, merge will fallback to server content.');
-            return true; // non-fatal, will fallback
+            console.warn('[CollabEditor] diff_match_patch not loaded, merge disabled.');
+            return true;
         }
         _dmp = new diff_match_patch();
         _dmp.Patch_Timeout = 1;
         return true;
     }
 
-    function _merge(server, local) {
+    /**
+     * 3-way merge: apply perubahan dari `base→local` ke atas `server`.
+     * 
+     * @param {string} base - Titik divergence (confirmed content saat user mulai edit)
+     * @param {string} local - Konten lokal user
+     * @param {string} server - Konten server terbaru
+     * @returns {string} Merged content
+     */
+    function _merge3(base, local, server) {
         if (local === server) return local;
-        if (!_dmp) return local;
-
-        var base = _mergeBase || _serverContent;
+        if (local === base) return server; // user tidak ubah apa-apa, ambil server
+        if (server === base) return local; // server tidak berubah, ambil local
+        if (!_dmp) return local; // no merge capability, prefer local
 
         try {
+            // Buat patch dari base → local (apa yang user ubah)
             var patches = _dmp.patch_make(base, local);
+            // Apply patch ke atas server content
             var result = _dmp.patch_apply(patches, server);
             var merged = result[0];
-            var results = result[1];
+            var success = result[1];
 
-            var failCount = results.filter(function (r) { return !r; }).length;
+            var failCount = success.filter(function (s) { return !s; }).length;
             if (failCount > 0) {
-                console.debug('[CollabEditor] ' + failCount + '/' + results.length + ' patches failed, server wins for conflicts');
+                console.debug('[CollabEditor] ' + failCount + '/' + success.length + ' patches failed — server wins for conflicts');
             }
 
             return merged;
         } catch (e) {
-            console.warn('[CollabEditor] Merge error, using local:', e);
+            console.warn('[CollabEditor] Merge error, preferring local:', e);
             return local;
         }
+    }
+
+    /**
+     * Hitung "effective content" — apa yang seharusnya ditampilkan di editor.
+     * Ini adalah merge dari semua layer: confirmed + inflight + pending
+     */
+    function _getEffectiveContent() {
+        // Start dari confirmed
+        var effective = _confirmedContent;
+
+        // Layer 1: apply inflight changes
+        if (_inflightContent !== null) {
+            effective = _inflightContent;
+        }
+
+        // Layer 2: apply pending changes di atas effective
+        if (_pendingContent !== null) {
+            // Base untuk pending = state sebelum pending dimulai
+            // Kalau ada inflight, base = inflight content (karena pending dimulai setelah inflight dikirim)
+            // Kalau tidak ada inflight, base = confirmed content
+            var pendingBase = _inflightContent !== null ? _inflightContent : _confirmedContent;
+            effective = _merge3(pendingBase, _pendingContent, effective);
+        }
+
+        return effective;
     }
 
     function _buildConnection() {
@@ -154,94 +208,122 @@ var CollabEditor = (function () {
     }
 
     function _registerHubHandlers() {
-        // State awal saat join
+
+        // === ReceiveDocState: State awal saat join ===
         _connection.on('ReceiveDocState', function (content, version) {
-            if (!content || !_editor) return;
+            if (!_editor) return;
 
             _isRemoteUpdate = true;
             try {
-                if (_pendingContent !== null && _dmp) {
-                    // Reconnect case — merge pending ke atas state server
-                    var base = _mergeBase || _serverContent;
-                    var merged = _merge(content, _pendingContent);
-                    _editor.setContent(merged);
-                    _serverContent = content;
-                    _serverVersion = version || 0;
-                    _pendingContent = merged;
-                    _mergeBase = base;
-                    _scheduleSend();
-                } else {
-                    _editor.setContent(content);
-                    _serverContent = content;
-                    _serverVersion = version || 0;
-                    _pendingContent = null;
-                    _mergeBase = null;
-                }
-            } finally {
-                _isRemoteUpdate = false;
-            }
+                _confirmedContent = content || '';
+                _confirmedVersion = version || 0;
 
-            if (typeof _config.onRemoteEdit === 'function') {
-                _config.onRemoteEdit();
-            }
-        });
+                // Reset inflight — server state sudah fresh
+                _inflightContent = null;
+                _inflightVersion = null;
 
-        // Update dari peer atau resync dari server
-        _connection.on('ReceiveUpdate', function (serverContent, serverVersion) {
-            if (!serverContent || !_editor) return;
-
-            // Ignore stale
-            if (serverVersion !== undefined && serverVersion <= _serverVersion) return;
-
-            _serverContent = serverContent;
-            _serverVersion = serverVersion || (_serverVersion + 1);
-
-            _isRemoteUpdate = true;
-            try {
                 if (_pendingContent !== null) {
-                    // Ada pending — tampilkan preview merge
-                    var preview = _merge(_serverContent, _pendingContent);
-                    if (_editor.getContent() !== preview) {
-                        var bookmark = _editor.selection.getBookmark(2, true);
-                        _editor.setContent(preview);
-                        try { _editor.selection.moveToBookmark(bookmark); } catch (e) { }
-                    }
+                    // Ada pending — merge ke atas state baru
+                    var merged = _merge3(_confirmedContent, _pendingContent, _confirmedContent);
+                    _pendingContent = merged;
+                    _updateEditor(merged);
+                    // Schedule send
                     _scheduleSend();
                 } else {
-                    // Tidak ada pending — apply langsung
-                    if (_editor.getContent() !== serverContent) {
-                        var bookmark = _editor.selection.getBookmark(2, true);
-                        _editor.setContent(serverContent);
-                        try { _editor.selection.moveToBookmark(bookmark); } catch (e) { }
-                    }
+                    _updateEditor(_confirmedContent);
                 }
             } finally {
                 _isRemoteUpdate = false;
             }
 
-            if (typeof _config.onRemoteEdit === 'function') {
-                _config.onRemoteEdit();
+            _fireCallback('onRemoteEdit');
+        });
+
+        // === ReceiveUpdate: Update dari peer (broadcast) ===
+        _connection.on('ReceiveUpdate', function (serverContent, serverVersion) {
+            if (!_editor || !serverContent) return;
+
+            // Ignore stale updates
+            if (serverVersion !== undefined && serverVersion <= _confirmedVersion) return;
+
+            _isRemoteUpdate = true;
+            try {
+                // Update confirmed state
+                var oldConfirmed = _confirmedContent;
+                _confirmedContent = serverContent;
+                _confirmedVersion = serverVersion;
+
+                // Recalculate effective content
+                if (_inflightContent !== null || _pendingContent !== null) {
+                    // Ada local changes — merge dan tampilkan
+                    var effective = _getEffectiveContent();
+                    _updateEditor(effective);
+                } else {
+                    // Tidak ada local changes — apply langsung
+                    _updateEditor(serverContent);
+                }
+            } finally {
+                _isRemoteUpdate = false;
+            }
+
+            _fireCallback('onRemoteEdit');
+        });
+
+        // === UpdateAck: Server accepted our update ===
+        _connection.on('UpdateAck', function (newVersion, acceptedContent) {
+            // Server confirmed our inflight content
+            _confirmedContent = acceptedContent || _inflightContent || _confirmedContent;
+            _confirmedVersion = newVersion;
+
+            // Clear inflight
+            _inflightContent = null;
+            _inflightVersion = null;
+
+            // Kalau ada pending, kirim sekarang
+            if (_pendingContent !== null) {
+                _doSend();
             }
         });
 
-        // Server konfirmasi update diterima
-        _connection.on('UpdateAck', function (newVersion) {
-            if (_lastSentContent !== undefined) {
-                _serverContent = _lastSentContent;
-            }
-            _serverVersion = newVersion;
+        // === Resync: Server rejected our update (version mismatch) ===
+        _connection.on('Resync', function (serverContent, serverVersion) {
+            _isRemoteUpdate = true;
+            try {
+                // Server bilang: "base version kamu salah, ini state terbaru"
+                // Kita harus merge ulang inflight + pending di atas state baru
 
-            if (_pendingContent === null || _pendingContent === _lastSentContent) {
-                _pendingContent = null;
-                _mergeBase = null;
-            } else {
-                // Ada ketikan baru sejak terakhir kirim
-                _mergeBase = _serverContent;
-                _scheduleSend();
+                var oldConfirmed = _confirmedContent;
+                _confirmedContent = serverContent;
+                _confirmedVersion = serverVersion;
+
+                // Merge inflight content yang ditolak ke atas server state
+                var recoveredLocal = _inflightContent;
+                if (_pendingContent !== null) {
+                    // Gabungkan inflight + pending sebagai "total local changes"
+                    recoveredLocal = _pendingContent;
+                }
+
+                // Clear inflight (sudah ditolak)
+                _inflightContent = null;
+                _inflightVersion = null;
+
+                if (recoveredLocal !== null && recoveredLocal !== serverContent) {
+                    // Merge local changes ke atas server state baru
+                    var merged = _merge3(oldConfirmed, recoveredLocal, serverContent);
+                    _pendingContent = merged;
+                    _updateEditor(merged);
+                    // Kirim ulang segera (tanpa debounce penuh, tapi beri sedikit jeda)
+                    setTimeout(function () { _doSend(); }, 50);
+                } else {
+                    _pendingContent = null;
+                    _updateEditor(serverContent);
+                }
+            } finally {
+                _isRemoteUpdate = false;
             }
         });
 
-        // Awareness (typing indicators)
+        // === Awareness (typing indicators) ===
         _connection.on('ReceiveAwareness', function (data) {
             if (data.isTyping) {
                 _showPeerTyping(data.connectionId, data.displayName, data.color);
@@ -250,7 +332,7 @@ var CollabEditor = (function () {
             }
         });
 
-        // Online users
+        // === Online users ===
         _connection.on('UsersOnline', function (users) {
             _renderOnlineUsers(users);
             users.forEach(function (u) {
@@ -258,11 +340,25 @@ var CollabEditor = (function () {
                     _peers.set(u.connectionId, { displayName: u.displayName, color: u.color });
                 }
             });
-
-            if (typeof _config.onUserListChanged === 'function') {
-                _config.onUserListChanged(users);
-            }
+            _fireCallback('onUserListChanged', users);
         });
+    }
+
+    /**
+     * Update editor content dengan preserve cursor position.
+     */
+    function _updateEditor(content) {
+        if (!_editor) return;
+        if (_editor.getContent() === content) return; // no-op
+
+        var bookmark = null;
+        try { bookmark = _editor.selection.getBookmark(2, true); } catch (e) { }
+
+        _editor.setContent(content);
+
+        if (bookmark) {
+            try { _editor.selection.moveToBookmark(bookmark); } catch (e) { }
+        }
     }
 
     function _startConnection() {
@@ -278,7 +374,9 @@ var CollabEditor = (function () {
 
         _connection.onreconnected(function () {
             _connected = true;
-            _serverVersion = 0;
+            _confirmedVersion = 0;
+            _inflightContent = null;
+            _inflightVersion = null;
             _connection.invoke('JoinEntry', _config.documentId, _config.userName, _config.avatar);
             _fireConnectionChanged('connected');
         });
@@ -301,6 +399,12 @@ var CollabEditor = (function () {
         }
     }
 
+    function _fireCallback(name, data) {
+        if (typeof _config[name] === 'function') {
+            _config[name](data);
+        }
+    }
+
     function _scheduleSend() {
         clearTimeout(_sendDebounce);
         _sendDebounce = setTimeout(function () {
@@ -308,11 +412,36 @@ var CollabEditor = (function () {
         }, _config.debounceMs);
     }
 
+    /**
+     * Kirim pending content ke server.
+     * 
+     * GUARD: Tidak boleh kirim kalau:
+     * - Tidak connected
+     * - Tidak ada pending
+     * - Ada request in-flight (tunggu ack/resync dulu)
+     */
     function _doSend() {
         if (!_connected || _pendingContent === null) return;
 
-        var toSend = _merge(_serverContent, _pendingContent);
-        _lastSentContent = toSend;
+        // IN-FLIGHT GUARD: tunggu ack/resync sebelum kirim lagi
+        if (_inflightContent !== null) {
+            // Sudah ada yang in-flight, pending akan dikirim setelah ack
+            return;
+        }
+
+        // Merge pending di atas confirmed untuk menghasilkan content yang dikirim
+        var toSend = _pendingContent;
+
+        // Kalau pending sama dengan confirmed, tidak perlu kirim
+        if (toSend === _confirmedContent) {
+            _pendingContent = null;
+            return;
+        }
+
+        // Pindahkan pending ke inflight
+        _inflightContent = toSend;
+        _inflightVersion = _confirmedVersion; // base version yang kita pakai
+        _pendingContent = null;
 
         // Clear max delay timer
         if (_maxDelayTimer) {
@@ -320,16 +449,23 @@ var CollabEditor = (function () {
             _maxDelayTimer = null;
         }
 
-        var versionSnapshot = _serverVersion;
-
-        _connection.invoke('SendHtmlUpdate', _config.documentId, toSend, versionSnapshot)
+        _connection.invoke('SendHtmlUpdate', _config.documentId, toSend, _inflightVersion)
             .catch(function (err) {
                 console.warn('[CollabEditor] SendHtmlUpdate failed:', err);
+                // Kembalikan inflight ke pending untuk retry
+                if (_pendingContent !== null) {
+                    // Ada pending baru — merge inflight + pending
+                    _pendingContent = _merge3(_confirmedContent, _pendingContent, _inflightContent);
+                } else {
+                    _pendingContent = _inflightContent;
+                }
+                _inflightContent = null;
+                _inflightVersion = null;
+                // Retry setelah delay
+                setTimeout(function () { _scheduleSend(); }, 1000);
             });
 
-        if (typeof _config.onLocalEdit === 'function') {
-            _config.onLocalEdit();
-        }
+        _fireCallback('onLocalEdit');
     }
 
     function _onContentChange() {
@@ -337,17 +473,19 @@ var CollabEditor = (function () {
 
         var htmlContent = _editor.getContent();
 
+        // Ignore kalau content sama dengan yang sudah confirmed + inflight
+        var currentEffective = _getEffectiveContent();
+        if (htmlContent === currentEffective && htmlContent === _confirmedContent) return;
+
         _setTyping(true);
 
-        // Set merge base saat user mulai ketik
-        if (_pendingContent === null) {
-            _mergeBase = _serverContent;
-        }
-
+        // Simpan sebagai pending
         _pendingContent = htmlContent;
+
+        // Schedule send (dengan debounce)
         _scheduleSend();
 
-        // Max delay: force send setelah N ms walaupun user masih ngetik
+        // Max delay: force send setelah N ms
         if (!_maxDelayTimer) {
             _maxDelayTimer = setTimeout(function () {
                 _maxDelayTimer = null;
@@ -483,11 +621,11 @@ var CollabEditor = (function () {
         _dmp = null;
         _attached = false;
         _connected = false;
-        _serverContent = '';
-        _serverVersion = 0;
+        _confirmedContent = '';
+        _confirmedVersion = 0;
+        _inflightContent = null;
+        _inflightVersion = null;
         _pendingContent = null;
-        _mergeBase = null;
-        _lastSentContent = undefined;
         _isRemoteUpdate = false;
         _isTyping = false;
         _sendDebounce = null;
@@ -499,30 +637,12 @@ var CollabEditor = (function () {
 
     // === PUBLIC API ===
     return {
-        /**
-         * Attach collaboration ke TinyMCE editor yang sudah diinisialisasi.
-         * Panggil ini di dalam editor.on('init', ...) callback.
-         *
-         * @param {Object} editor - Instance TinyMCE editor
-         * @param {Object} options - Konfigurasi collaboration
-         * @param {string} options.userName - Nama user
-         * @param {string} [options.avatar] - URL avatar user
-         * @param {string} options.documentId - ID dokumen/entry untuk collaboration
-         * @param {string} [options.hubUrl='/hubs/collaboration'] - URL SignalR hub
-         * @param {number} [options.debounceMs=300] - Debounce delay (ms)
-         * @param {number} [options.maxDelayMs=2000] - Max delay sebelum force send (ms)
-         * @param {function} [options.onUserListChanged] - Callback saat user list berubah
-         * @param {function} [options.onConnectionChanged] - Callback saat koneksi berubah
-         * @param {function} [options.onRemoteEdit] - Callback saat ada edit dari user lain
-         * @param {function} [options.onLocalEdit] - Callback saat user lokal mengedit
-         */
         attach: function (editor, options) {
             if (!editor) {
                 console.error('[CollabEditor] Editor instance is required.');
                 return;
             }
 
-            // Detach dulu kalau sudah attached sebelumnya
             if (_attached) {
                 this.detach();
             }
@@ -531,26 +651,16 @@ var CollabEditor = (function () {
             _editor = editor;
 
             _initDiffMatchPatch();
-
             if (!_buildConnection()) return;
 
-            // Simpan konten awal
-            _serverContent = _editor.getContent();
-
-            // Bind event listeners ke editor
+            _confirmedContent = _editor.getContent();
             _bindEditorEvents();
-
             _attached = true;
-
-            // Mulai koneksi SignalR
             _startConnection();
 
-            console.log('[CollabEditor] Attached to editor "' + _editor.id + '" | Document: ' + _config.documentId + ' | User: ' + _config.userName);
+            console.log('[CollabEditor] Attached | Doc: ' + _config.documentId + ' | User: ' + _config.userName);
         },
 
-        /**
-         * Lepas collaboration dari editor & disconnect SignalR
-         */
         detach: function () {
             clearTimeout(_sendDebounce);
             clearTimeout(_maxDelayTimer);
@@ -567,76 +677,41 @@ var CollabEditor = (function () {
             console.log('[CollabEditor] Detached.');
         },
 
-        /**
-         * Mendapatkan konten editor saat ini
-         * @returns {string}
-         */
         getContent: function () {
             if (!_attached || !_editor) return '';
             return _editor.getContent();
         },
 
-        /**
-         * Set konten editor dan broadcast ke peers
-         * @param {string} content - HTML content
-         */
         setContent: function (content) {
             if (!_attached || !_editor) return;
             _isRemoteUpdate = true;
             _editor.setContent(content);
             _isRemoteUpdate = false;
 
-            // Kirim sebagai update ke server
             _pendingContent = content;
-            _mergeBase = _serverContent;
             _doSend();
         },
 
-        /**
-         * Force kirim perubahan sekarang (tanpa debounce)
-         */
         sendChanges: function () {
             _doSend();
         },
 
-        /**
-         * Disconnect dari SignalR
-         */
         disconnect: function () {
-            if (_connection) {
-                _connection.stop();
-            }
+            if (_connection) _connection.stop();
         },
 
-        /**
-         * Reconnect ke SignalR
-         */
         reconnect: function () {
-            if (_connection && !_connected) {
-                _startConnection();
-            }
+            if (_connection && !_connected) _startConnection();
         },
 
-        /**
-         * Cek status koneksi
-         * @returns {boolean}
-         */
         isConnected: function () {
             return _connected;
         },
 
-        /**
-         * Cek apakah sudah attached & ready
-         * @returns {boolean}
-         */
         isReady: function () {
             return _attached;
         },
 
-        /**
-         * Property flag untuk cek apakah sedang apply remote update.
-         * Berguna untuk mencegah loop di event handler TinyMCE.
-         */
         get _applyingRemote() {
             return _isRemoteUpdate;
         }

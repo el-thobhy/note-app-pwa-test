@@ -178,8 +178,10 @@ class CollaborationClient {
         });
 
         // Server konfirmasi update kita diterima
-        this.connection.on('UpdateAck', (newVersion) => {
-            if (this._lastSentContent !== undefined) {
+        this.connection.on('UpdateAck', (newVersion, acceptedContent) => {
+            if (acceptedContent) {
+                this._serverContent = acceptedContent;
+            } else if (this._lastSentContent !== undefined) {
                 this._serverContent = this._lastSentContent;
             }
             this._serverVersion = newVersion;
@@ -197,6 +199,41 @@ class CollaborationClient {
                 this._mergeBase = this._serverContent;
                 // Reschedule send untuk pending yang masih ada
                 this._scheduleSend();
+            }
+        });
+
+        // Server reject update kita (version mismatch) — harus resync
+        this.connection.on('Resync', (serverContent, serverVersion) => {
+            if (!serverContent || !this.editor) return;
+
+            this._applyingRemote = true;
+            try {
+                const oldBase = this._mergeBase ?? this._serverContent;
+                this._serverContent = serverContent;
+                this._serverVersion = serverVersion;
+
+                if (this._pendingContent !== null && this._dmp) {
+                    // Merge pending ke atas state server baru
+                    const merged = this._merge(serverContent, this._pendingContent);
+                    this._pendingContent = merged;
+                    this._mergeBase = serverContent;
+                    this.editor.setContent(merged);
+                    // Kirim ulang
+                    this._scheduleSend();
+                } else if (this._lastSentContent && this._lastSentContent !== serverContent) {
+                    // Inflight ditolak, jadikan pending dan merge ulang
+                    const merged = this._merge(serverContent, this._lastSentContent);
+                    this._pendingContent = merged;
+                    this._mergeBase = serverContent;
+                    this.editor.setContent(merged);
+                    this._scheduleSend();
+                } else {
+                    this._pendingContent = null;
+                    this._mergeBase = null;
+                    this.editor.setContent(serverContent);
+                }
+            } finally {
+                this._applyingRemote = false;
             }
         });
 

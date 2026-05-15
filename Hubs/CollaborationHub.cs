@@ -6,21 +6,22 @@ namespace NoteApp.Hubs
     /// <summary>
     /// SignalR hub untuk real-time collaboration per entry.
     ///
-    /// Strategi (server-authoritative, last-write-wins dengan version guard):
-    /// - Server menyimpan konten + version per entry
-    /// - Client kirim (entryId, htmlContent, clientVersion)
-    /// - Server hanya accept update kalau clientVersion == serverVersion (tidak ada gap)
-    ///   Kalau ada gap (client ketinggalan update), server kirim balik state terbaru
-    ///   supaya client bisa resync, lalu client kirim ulang dengan base yang benar
-    /// - Broadcast ke semua KECUALI pengirim (pengirim sudah punya kontennya sendiri)
-    /// - Pengirim terima ack (version terbaru) supaya bisa track apakah update diterima
+    /// Strategi: Operational Transform-lite dengan strict version guard.
+    /// - Server menyimpan konten + version per entry (protected by SemaphoreSlim per entry)
+    /// - Client kirim (entryId, htmlContent, baseVersion)
+    ///   baseVersion = version yang client pakai sebagai base untuk merge
+    /// - Server HANYA accept kalau baseVersion == serverVersion (strict equality)
+    ///   Ini mencegah race condition saat 2 client kirim bersamaan
+    /// - Kalau baseVersion != serverVersion → client ketinggalan, server kirim resync
+    /// - Broadcast ke semua KECUALI pengirim
+    /// - Pengirim terima UpdateAck(newVersion, serverContent) supaya bisa update base-nya
     /// </summary>
     public class CollaborationHub : Hub
     {
-        private static readonly ConcurrentDictionary<string, DocState> _docStates  = new();
-        private static readonly ConcurrentDictionary<string, CollabUser> _users     = new();
-        private static readonly ConcurrentDictionary<string, string> _connEntry     = new();
-        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _locks  = new();
+        private static readonly ConcurrentDictionary<string, DocState> _docStates = new();
+        private static readonly ConcurrentDictionary<string, CollabUser> _users = new();
+        private static readonly ConcurrentDictionary<string, string> _connEntry = new();
+        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new();
 
         private readonly ILogger<CollaborationHub> _logger;
 
@@ -37,10 +38,10 @@ namespace NoteApp.Hubs
             _users[Context.ConnectionId] = new CollabUser
             {
                 ConnectionId = Context.ConnectionId,
-                DisplayName  = displayName,
-                Avatar       = avatar,
-                EntryId      = entryId,
-                Color        = GenerateColor(Context.ConnectionId)
+                DisplayName = displayName,
+                Avatar = avatar,
+                EntryId = entryId,
+                Color = GenerateColor(Context.ConnectionId)
             };
 
             if (_docStates.TryGetValue(entryId, out var state) && !string.IsNullOrEmpty(state.Content))
@@ -53,9 +54,16 @@ namespace NoteApp.Hubs
 
         /// <summary>
         /// Client kirim update konten.
-        /// clientVersion = version terakhir yang client ketahui dari server.
+        /// baseVersion = version yang client pakai sebagai base saat merge.
+        /// 
+        /// STRICT version guard:
+        /// - Accept HANYA kalau baseVersion == serverVersion (atau server kosong)
+        /// - Reject kalau baseVersion != serverVersion → kirim Resync supaya client merge ulang
+        /// 
+        /// Ini mencegah race condition: kalau 2 client kirim bersamaan,
+        /// yang pertama masuk akan accepted, yang kedua akan di-reject dan harus resync.
         /// </summary>
-        public async Task SendHtmlUpdate(string entryId, string htmlContent, long clientVersion)
+        public async Task SendHtmlUpdate(string entryId, string htmlContent, long baseVersion)
         {
             if (string.IsNullOrEmpty(htmlContent)) return;
 
@@ -64,30 +72,34 @@ namespace NoteApp.Hubs
             try
             {
                 var current = _docStates.GetValueOrDefault(entryId);
+                var serverVersion = current?.Version ?? 0;
 
-                // Client sudah up-to-date — accept update, simpan, broadcast ke peers
-                if (current == null || clientVersion >= current.Version)
+                // STRICT: accept hanya kalau base version match server version
+                if (current == null || baseVersion == serverVersion)
                 {
-                    var newVersion = (current?.Version ?? 0) + 1;
+                    var newVersion = serverVersion + 1;
                     _docStates[entryId] = new DocState { Content = htmlContent, Version = newVersion };
 
-                    // Broadcast ke peers (bukan pengirim) — pengirim sudah punya kontennya
+                    // Broadcast ke peers (bukan pengirim)
                     await Clients.OthersInGroup(GroupName(entryId))
                         .SendAsync("ReceiveUpdate", htmlContent, newVersion);
 
-                    // Kirim ack ke pengirim supaya dia tahu version terbaru
+                    // Ack ke pengirim: version baru + content yang disimpan server
+                    // Client pakai ini untuk update _serverContent dan _serverVersion
                     await Clients.Caller
-                        .SendAsync("UpdateAck", newVersion);
+                        .SendAsync("UpdateAck", newVersion, htmlContent);
                 }
                 else
                 {
-                    // Client ketinggalan update — kirim state terbaru supaya client resync
-                    // Client akan apply state ini, update base-nya, lalu kirim ulang perubahannya
-                    _logger.LogDebug("[Collab] Client behind for entry {EntryId}, clientVer={ClientVer}, serverVer={ServerVer}",
-                        entryId, clientVersion, current.Version);
+                    // Client base version tidak match — ada update dari peer yang belum di-apply
+                    // Kirim Resync: server content terbaru + version
+                    // Client harus merge ulang pending-nya di atas state ini, lalu kirim ulang
+                    _logger.LogDebug(
+                        "[Collab] Version mismatch for {EntryId}: client base={BaseVer}, server={ServerVer}. Sending Resync.",
+                        entryId, baseVersion, serverVersion);
 
                     await Clients.Caller
-                        .SendAsync("ReceiveUpdate", current.Content, current.Version);
+                        .SendAsync("Resync", current!.Content, current.Version);
                 }
             }
             finally
@@ -102,9 +114,9 @@ namespace NoteApp.Hubs
             await Clients.OthersInGroup(GroupName(entryId)).SendAsync("ReceiveAwareness", new
             {
                 connectionId = Context.ConnectionId,
-                displayName  = user?.DisplayName ?? "Unknown",
-                color        = user?.Color ?? "#888",
-                isTyping     = awarenessData.IsTyping
+                displayName = user?.DisplayName ?? "Unknown",
+                color = user?.Color ?? "#888",
+                isTyping = awarenessData.IsTyping
             });
         }
 
@@ -143,21 +155,21 @@ namespace NoteApp.Hubs
     public class DocState
     {
         public string Content { get; set; } = "";
-        public long   Version { get; set; } = 0;
+        public long Version { get; set; } = 0;
     }
 
     public class CollabUser
     {
         public string ConnectionId { get; set; } = "";
-        public string DisplayName  { get; set; } = "";
-        public string Avatar       { get; set; } = "";
-        public string EntryId      { get; set; } = "";
-        public string Color        { get; set; } = "";
+        public string DisplayName { get; set; } = "";
+        public string Avatar { get; set; } = "";
+        public string EntryId { get; set; } = "";
+        public string Color { get; set; } = "";
     }
 
     public class AwarenessData
     {
-        public bool   IsTyping    { get; set; }
+        public bool IsTyping { get; set; }
         public string DisplayName { get; set; } = "";
     }
 }
