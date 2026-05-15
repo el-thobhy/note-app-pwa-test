@@ -120,7 +120,16 @@
         var collabDisplayName = "@displayName";
         var collabAvatar = "@avatar";
         var collabUserColor = "@userColor";
-        // CollabEditor dipakai dari collab-editor_2.js (singleton module pattern)
+
+        // Instance CollaborationClient aktif (dari collab-editor_2.js)
+        var _collabClient = null;
+
+        function collabDestroy() {
+            if (_collabClient) {
+                _collabClient.destroy();
+                _collabClient = null;
+            }
+        }
 
         function applyEditorColor(color) {
             // Border TinyMCE container
@@ -239,22 +248,22 @@
                                 const currentEntryId = $("input[name='Id']").val();
                                 if (!currentEntryId) return;
 
-                                // Detach previous instance jika ada
-                                if (CollabEditor.isReady()) {
-                                    CollabEditor.detach();
-                                }
+                                // Destroy instance sebelumnya kalau ada
+                                collabDestroy();
 
-                                CollabEditor.attach(editor, {
-                                    userName: collabDisplayName,
-                                    avatar: collabAvatar,
-                                    documentId: currentEntryId,
-                                    hubUrl: '/hubs/collaboration',
-                                    debounceMs: 300,
-                                    maxDelayMs: 2000,
-                                    onUserListChanged: function(users) {},
-                                    onConnectionChanged: function(status) {},
-                                    onRemoteEdit: function() {},
-                                    onLocalEdit: function() {}
+                                // Buat instance baru CollaborationClient
+                                _collabClient = new CollaborationClient(
+                                    currentEntryId,
+                                    collabDisplayName,
+                                    collabAvatar
+                                );
+                                _collabClient.init(editor);
+
+                                // Bind perubahan editor ke collab client
+                                editor.on('Change KeyUp Paste Undo Redo', function () {
+                                    if (_collabClient) {
+                                        _collabClient.sendContentUpdate(editor.getContent());
+                                    }
                                 });
 
                                 // Apply warna cursor dari username (deterministik)
@@ -322,7 +331,7 @@
         // Sidebar click
         $(".listDateSidebar").on("click", function () {
             entryId = $(this).data("id");
-            if (CollabEditor.isReady()) { CollabEditor.detach(); }
+            collabDestroy();
             loadRoomDetail(entryId, null);
         });
 
@@ -405,7 +414,7 @@
                     // Re-bind click event
                     $('#entrySidebar').off('click', '.listDateSidebar').on('click', '.listDateSidebar', function () {
                         entryId = $(this).data('id');
-                        if (CollabEditor.isReady()) { CollabEditor.detach(); }
+                        collabDestroy();
                         loadRoomDetail(entryId, null);
                     });
 
