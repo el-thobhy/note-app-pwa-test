@@ -7,34 +7,33 @@ namespace NoteApp.Hubs
     /// <summary>
     /// Real-time collaboration hub — SERVER-SIDE MERGE ONLY.
     ///
-    /// Client sangat simple:
+    /// Client:
     ///   - Kirim: SendUpdate(entryId, content, baseVersion)
     ///   - Terima: ReceiveState(content, version) → replace editor
     ///
-    /// Server yang handle semua merge:
-    ///   - Kalau baseVersion == serverVersion → no conflict, accept langsung
-    ///   - Kalau baseVersion < serverVersion → conflict, server merge pakai 3-way diff
+    /// Merge strategy (3-way diff):
+    ///   - base  = snapshot di baseVersion dari history
+    ///   - mine  = content dari client
+    ///   - theirs = current server state
+    ///   - diff(base, mine) → patch → apply ke theirs
     ///
-    /// Merge strategy (3-way):
-    ///   - base = snapshot server text saat client's baseVersion (dari history)
-    ///   - theirs = current server text (sudah include edits dari peer)
-    ///   - mine = client's content
-    ///   - diff(base, mine) → patch (apa yang client ubah)
-    ///   - apply patch ke theirs → merged result
-    ///
-    /// Hasilnya: kedua perubahan (client + peer) preserved.
-    ///
-    /// Fix race conditions:
+    /// Race condition fixes:
     ///   1. JoinEntry baca state di dalam lock → consistent read
-    ///   2. DocState menyimpan version history (bukan hanya BaseSnapshot terakhir)
-    ///      sehingga merge selalu pakai base yang tepat sesuai baseVersion client
+    ///   2. DocState pakai version history → merge selalu pakai base yang tepat
+    ///   3. _users + _connEntry dikelola atomic lewat satu lock per connId
+    ///   4. Lock di SendUpdate direlease SEBELUM broadcast → tidak hold lock saat I/O
     /// </summary>
     public class CollaborationHub : Hub
     {
         private static readonly ConcurrentDictionary<string, DocState> _docStates = new();
         private static readonly ConcurrentDictionary<string, CollabUser> _users = new();
         private static readonly ConcurrentDictionary<string, string> _connEntry = new();
-        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new();
+
+        // Lock per entryId untuk serialize writes ke DocState
+        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _docLocks = new();
+
+        // Lock per connectionId untuk atomic update _users + _connEntry
+        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _connLocks = new();
 
         private readonly ILogger<CollaborationHub> _logger;
 
@@ -47,22 +46,35 @@ namespace NoteApp.Hubs
         {
             await Groups.AddToGroupAsync(Context.ConnectionId, GroupName(entryId));
 
-            _connEntry[Context.ConnectionId] = entryId;
-            _users[Context.ConnectionId] = new CollabUser
+            // FIX #3: Update _users dan _connEntry secara atomic lewat lock per connId.
+            // Sebelumnya dua write terpisah tanpa koordinasi — BroadcastUsers bisa
+            // baca _users di tengah-tengah sehingga user baru tidak kelihatan atau
+            // user lama masih kelihatan padahal sudah disconnect.
+            var connLock = _connLocks.GetOrAdd(Context.ConnectionId, _ => new SemaphoreSlim(1, 1));
+            await connLock.WaitAsync();
+            try
             {
-                ConnectionId = Context.ConnectionId,
-                DisplayName = displayName,
-                Avatar = avatar,
-                EntryId = entryId,
-                Color = GenerateColor(Context.ConnectionId)
-            };
+                _connEntry[Context.ConnectionId] = entryId;
+                _users[Context.ConnectionId] = new CollabUser
+                {
+                    ConnectionId = Context.ConnectionId,
+                    DisplayName = displayName,
+                    Avatar = avatar,
+                    EntryId = entryId,
+                    Color = GenerateColor(Context.ConnectionId)
+                };
+            }
+            finally
+            {
+                connLock.Release();
+            }
 
-            // FIX #1: Baca state di dalam lock supaya consistent read.
-            // Sebelumnya: baca Content dan Version di luar lock → bisa dapat
-            // Content versi baru tapi Version versi lama (atau sebaliknya)
-            // karena SendUpdate bisa nulis keduanya secara concurrent.
-            var lock_ = _locks.GetOrAdd(entryId, _ => new SemaphoreSlim(1, 1));
-            await lock_.WaitAsync();
+            // FIX #1: Baca DocState di dalam doc lock → consistent read.
+            // Sebelumnya baca Content + Version di luar lock, bisa dapat
+            // Content versi baru tapi Version versi lama karena SendUpdate
+            // nulis keduanya secara concurrent.
+            var docLock = _docLocks.GetOrAdd(entryId, _ => new SemaphoreSlim(1, 1));
+            await docLock.WaitAsync();
             string currentContent;
             long currentVersion;
             try
@@ -73,9 +85,10 @@ namespace NoteApp.Hubs
             }
             finally
             {
-                lock_.Release();
+                docLock.Release();
             }
 
+            // Broadcast di luar semua lock
             await Clients.Caller.SendAsync("ReceiveState", currentContent, currentVersion);
             await BroadcastUsers(entryId);
         }
@@ -83,86 +96,69 @@ namespace NoteApp.Hubs
         /// <summary>
         /// Client kirim update.
         ///
-        /// Parameters:
-        ///   - entryId: document ID
-        ///   - content: full HTML content dari editor client
-        ///   - baseVersion: version yang client pakai sebagai starting point
-        ///
-        /// Server logic:
-        ///   1. Lock per entry (serialize semua writes)
-        ///   2. Kalau baseVersion == serverVersion → no conflict, accept as-is
-        ///   3. Kalau baseVersion &lt; serverVersion → conflict:
-        ///      - Ambil snapshot tepat di baseVersion dari history
-        ///      - 3-way merge: diff(base, clientContent) → apply ke serverContent
-        ///   4. Broadcast merged result ke SEMUA (termasuk pengirim)
-        ///      Pengirim juga terima supaya editor-nya sync dengan server result
+        /// FIX #4: Lock direlease SEBELUM broadcast ke group.
+        /// Sebelumnya lock masih dipegang saat Clients.Group().SendAsync() —
+        /// network I/O yang bisa lambat — sehingga semua SendUpdate lain
+        /// untuk entryId yang sama harus nunggu, berpotensi deadlock.
         /// </summary>
         public async Task SendUpdate(string entryId, string content, long baseVersion)
         {
             if (content == null) return;
 
-            var lock_ = _locks.GetOrAdd(entryId, _ => new SemaphoreSlim(1, 1));
-            await lock_.WaitAsync();
+            var docLock = _docLocks.GetOrAdd(entryId, _ => new SemaphoreSlim(1, 1));
+            await docLock.WaitAsync();
+
+            string merged;
+            long newVersion;
             try
             {
                 var state = _docStates.GetOrAdd(entryId, _ => new DocState());
 
-                string merged;
-
                 if (state.Version == 0 || baseVersion >= state.Version)
                 {
-                    // No conflict — client is up to date, accept content as-is
+                    // No conflict — client up to date
                     merged = content;
                 }
                 else
                 {
-                    // Conflict — client's baseVersion < server version
-                    // Artinya ada edits dari peer yang client belum tahu.
-                    // FIX #2: Ambil snapshot tepat di baseVersion dari history,
-                    // bukan selalu pakai BaseSnapshot terakhir.
-                    // Sebelumnya: kalau 3+ client edit bersamaan, BaseSnapshot
-                    // sudah bergeser sehingga base yang dipakai salah.
+                    // Conflict — ambil snapshot tepat di baseVersion (FIX #2)
                     var baseText = state.GetSnapshot(baseVersion);
                     merged = MergeContent(baseText, content, state.Content);
                 }
 
-                // Simpan snapshot sebelum di-overwrite, lalu update state
                 state.SaveSnapshot(state.Version, state.Content);
                 state.Content = merged;
                 state.Version++;
-
-                // Broadcast ke SEMUA termasuk pengirim.
-                // Pengirim juga harus update editor-nya ke merged result
-                // supaya semua client punya state yang SAMA.
-                await Clients.Group(GroupName(entryId))
-                    .SendAsync("ReceiveState", merged, state.Version);
+                newVersion = state.Version;
             }
             finally
             {
-                lock_.Release();
+                // FIX #4: Release lock SEBELUM broadcast
+                docLock.Release();
             }
+
+            // Broadcast di luar lock — tidak ada state mutation di sini
+            await Clients.Group(GroupName(entryId))
+                .SendAsync("ReceiveState", merged, newVersion);
         }
 
         /// <summary>
-        /// 3-way merge menggunakan diff-match-patch.
+        /// 3-way merge pakai diff-match-patch.
         ///
-        /// base: state server saat client mulai edit (sebelum peer edit)
-        /// mine: content yang client kirim (client's version)
-        /// theirs: current server state (sudah include peer edits)
+        /// base  = state saat client mulai edit
+        /// mine  = content dari client
+        /// theirs = current server state (sudah include peer edits)
         ///
-        /// Strategy:
-        ///   1. diff(base, mine) → patches (apa yang client ubah dari base)
-        ///   2. apply patches ke theirs → merged (client changes on top of peer changes)
-        ///   3. Kalau patch gagal, fallback: coba sebaliknya
-        ///   4. Kalau masih gagal, prefer theirs (server wins, data tidak hilang)
+        /// Strategy 1: apply client's diff on top of server state
+        /// Strategy 2: apply server's diff on top of client content (fallback)
+        /// Pilih strategy dengan patch failure paling sedikit.
         /// </summary>
         private string MergeContent(string baseText, string mine, string theirs)
         {
-            // Edge cases
             if (mine == theirs) return mine;
-            if (mine == baseText) return theirs; // client tidak ubah apa-apa
-            if (theirs == baseText) return mine; // server tidak berubah (seharusnya tidak terjadi)
-            if (string.IsNullOrEmpty(baseText)) return theirs; // no base, server wins
+            if (mine == baseText) return theirs;
+            if (theirs == baseText) return mine;
+            if (string.IsNullOrEmpty(baseText)) return theirs;
 
             try
             {
@@ -170,72 +166,85 @@ namespace NoteApp.Hubs
                 dmp.Match_Threshold = 0.4f;
                 dmp.Match_Distance = 2000;
 
-                // Strategy 1: Apply client's changes on top of server state
-                var diffs = dmp.diff_main(baseText, mine);
-                if (diffs.Count > 2) dmp.diff_cleanupSemantic(diffs);
-                var patches = dmp.patch_make(baseText, diffs);
-                var result = dmp.patch_apply(patches, theirs);
-                var merged = (string)result[0];
-                var success = (bool[])result[1];
+                // Strategy 1: client changes on top of server state
+                var diffs1 = dmp.diff_main(baseText, mine);
+                if (diffs1.Count > 2) dmp.diff_cleanupSemantic(diffs1);
+                var patches1 = dmp.patch_make(baseText, diffs1);
+                var result1 = dmp.patch_apply(patches1, theirs);
+                var merged1 = (string)result1[0];
+                var fail1 = ((bool[])result1[1]).Count(s => !s);
 
-                var failCount = 0;
-                foreach (var s in success) if (!s) failCount++;
+                if (fail1 == 0) return merged1;
 
-                if (failCount == 0) return merged;
+                _logger.LogDebug("[Collab] Strategy1: {Fail} patches failed, trying reverse", fail1);
 
-                _logger.LogDebug("[Collab] Primary merge: {FailCount}/{Total} patches failed, trying reverse",
-                    failCount, success.Length);
-
-                // Strategy 2: Apply server's changes on top of client content
+                // Strategy 2: server changes on top of client content
                 var diffs2 = dmp.diff_main(baseText, theirs);
                 if (diffs2.Count > 2) dmp.diff_cleanupSemantic(diffs2);
                 var patches2 = dmp.patch_make(baseText, diffs2);
                 var result2 = dmp.patch_apply(patches2, mine);
                 var merged2 = (string)result2[0];
-                var success2 = (bool[])result2[1];
+                var fail2 = ((bool[])result2[1]).Count(s => !s);
 
-                var failCount2 = 0;
-                foreach (var s in success2) if (!s) failCount2++;
-
-                // Pakai strategy yang lebih banyak berhasil
-                return failCount2 < failCount ? merged2 : merged;
+                return fail2 < fail1 ? merged2 : merged1;
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "[Collab] Merge exception, using server content (theirs)");
+                _logger.LogWarning(ex, "[Collab] Merge exception, server wins");
                 return theirs;
             }
         }
 
         public async Task SendAwareness(string entryId, AwarenessData awarenessData)
         {
-            var user = _users.GetValueOrDefault(Context.ConnectionId);
+            // Baca user snapshot — kalau tidak ada (timing edge case) skip saja
+            if (!_users.TryGetValue(Context.ConnectionId, out var user)) return;
+
             await Clients.OthersInGroup(GroupName(entryId)).SendAsync("ReceiveAwareness", new
             {
                 connectionId = Context.ConnectionId,
-                displayName = user?.DisplayName ?? "Unknown",
-                color = user?.Color ?? "#888",
+                displayName = user.DisplayName,
+                color = user.Color,
                 isTyping = awarenessData.IsTyping
             });
         }
 
         public override async Task OnDisconnectedAsync(Exception? exception)
         {
-            if (_connEntry.TryRemove(Context.ConnectionId, out var entryId))
+            // FIX #3: Remove _connEntry dan _users secara atomic
+            var connLock = _connLocks.GetOrAdd(Context.ConnectionId, _ => new SemaphoreSlim(1, 1));
+            await connLock.WaitAsync();
+            string? entryId = null;
+            try
             {
-                _users.TryRemove(Context.ConnectionId, out _);
+                if (_connEntry.TryRemove(Context.ConnectionId, out entryId))
+                    _users.TryRemove(Context.ConnectionId, out _);
+            }
+            finally
+            {
+                connLock.Release();
+                // Cleanup lock entry supaya tidak leak
+                if (_connLocks.TryRemove(Context.ConnectionId, out var removedLock))
+                    removedLock.Dispose();
+            }
+
+            if (entryId != null)
+            {
                 await Groups.RemoveFromGroupAsync(Context.ConnectionId, GroupName(entryId));
                 await BroadcastUsers(entryId);
             }
+
             await base.OnDisconnectedAsync(exception);
         }
 
         private async Task BroadcastUsers(string entryId)
         {
+            // Snapshot _users.Values sekali — ConcurrentDictionary.Values sudah thread-safe untuk read
             var online = _users.Values
                 .Where(u => u.EntryId == entryId)
                 .Select(u => new { u.ConnectionId, u.DisplayName, u.Avatar, u.Color })
                 .ToList();
+
             await Clients.Group(GroupName(entryId)).SendAsync("UsersOnline", online);
         }
 
@@ -256,37 +265,34 @@ namespace NoteApp.Hubs
         public string Content { get; set; } = "";
         public long Version { get; set; } = 0;
 
-        // FIX #2: Ganti single BaseSnapshot dengan version history.
-        // Menyimpan N snapshot terakhir supaya merge selalu bisa pakai
-        // base yang tepat sesuai baseVersion yang dikirim client.
+        // Version history — simpan N snapshot terakhir
+        // supaya merge selalu bisa pakai base yang tepat sesuai baseVersion client
         private const int MaxSnapshots = 30;
         private readonly Dictionary<long, string> _snapshots = new();
 
         /// <summary>
-        /// Simpan snapshot untuk version tertentu.
-        /// Dipanggil sebelum Content di-overwrite.
+        /// Simpan snapshot sebelum Content di-overwrite.
+        /// Dipanggil di dalam doc lock.
         /// </summary>
         public void SaveSnapshot(long version, string content)
         {
             _snapshots[version] = content;
 
-            // Prune snapshot lama supaya memory tidak terus tumbuh
             if (_snapshots.Count > MaxSnapshots)
             {
-                var oldest = _snapshots.Keys.OrderBy(k => k).First();
+                var oldest = _snapshots.Keys.Min();
                 _snapshots.Remove(oldest);
             }
         }
 
         /// <summary>
         /// Ambil snapshot terdekat yang &lt;= targetVersion.
-        /// Kalau tidak ada history sama sekali, return string kosong.
+        /// Return string kosong kalau tidak ada history.
         /// </summary>
         public string GetSnapshot(long targetVersion)
         {
             if (_snapshots.Count == 0) return "";
 
-            // Cari snapshot dengan version <= targetVersion, ambil yang terbesar
             var best = _snapshots.Keys
                 .Where(k => k <= targetVersion)
                 .OrderByDescending(k => k)
