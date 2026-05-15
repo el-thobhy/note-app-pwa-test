@@ -6,15 +6,16 @@ namespace NoteApp.Hubs
     /// <summary>
     /// SignalR hub untuk real-time collaboration per entry.
     ///
-    /// Strategi: Operational Transform-lite dengan strict version guard.
-    /// - Server menyimpan konten + version per entry (protected by SemaphoreSlim per entry)
-    /// - Client kirim (entryId, htmlContent, baseVersion)
-    ///   baseVersion = version yang client pakai sebagai base untuk merge
-    /// - Server HANYA accept kalau baseVersion == serverVersion (strict equality)
-    ///   Ini mencegah race condition saat 2 client kirim bersamaan
-    /// - Kalau baseVersion != serverVersion → client ketinggalan, server kirim resync
-    /// - Broadcast ke semua KECUALI pengirim
-    /// - Pengirim terima UpdateAck(newVersion, serverContent) supaya bisa update base-nya
+    /// Strategi: Differential Synchronization (Neil Fraser style)
+    /// - Server menyimpan "server text" per entry
+    /// - Client kirim PATCH (diff dari shadow → current)
+    /// - Server apply patch ke server text, lalu broadcast patch ke peers
+    /// - Peers apply patch ke shadow DAN editor mereka
+    /// - Ini menghindari race condition karena patch bersifat incremental,
+    ///   bukan full-replace. Dua patch dari 2 user bisa di-apply berurutan
+    ///   tanpa saling overwrite.
+    ///
+    /// Fallback: kalau patch gagal, server kirim full state untuk resync.
     /// </summary>
     public class CollaborationHub : Hub
     {
@@ -44,6 +45,7 @@ namespace NoteApp.Hubs
                 Color = GenerateColor(Context.ConnectionId)
             };
 
+            // Kirim current state ke client yang baru join
             if (_docStates.TryGetValue(entryId, out var state) && !string.IsNullOrEmpty(state.Content))
             {
                 await Clients.Caller.SendAsync("ReceiveDocState", state.Content, state.Version);
@@ -53,53 +55,60 @@ namespace NoteApp.Hubs
         }
 
         /// <summary>
-        /// Client kirim update konten.
-        /// baseVersion = version yang client pakai sebagai base saat merge.
+        /// Client kirim patch (diff text dari diff-match-patch).
+        /// Server apply patch ke server text, lalu broadcast ke peers.
         /// 
-        /// STRICT version guard:
-        /// - Accept HANYA kalau baseVersion == serverVersion (atau server kosong)
-        /// - Reject kalau baseVersion != serverVersion → kirim Resync supaya client merge ulang
-        /// 
-        /// Ini mencegah race condition: kalau 2 client kirim bersamaan,
-        /// yang pertama masuk akan accepted, yang kedua akan di-reject dan harus resync.
+        /// Kalau patch gagal apply, server kirim full state ke pengirim untuk resync.
         /// </summary>
-        public async Task SendHtmlUpdate(string entryId, string htmlContent, long baseVersion)
+        public async Task SendPatch(string entryId, string patchText)
         {
-            if (string.IsNullOrEmpty(htmlContent)) return;
+            if (string.IsNullOrEmpty(patchText)) return;
 
             var lock_ = _locks.GetOrAdd(entryId, _ => new SemaphoreSlim(1, 1));
             await lock_.WaitAsync();
             try
             {
-                var current = _docStates.GetValueOrDefault(entryId);
-                var serverVersion = current?.Version ?? 0;
+                var current = _docStates.GetOrAdd(entryId, _ => new DocState());
+                var serverContent = current.Content ?? "";
 
-                // STRICT: accept hanya kalau base version match server version
-                if (current == null || baseVersion == serverVersion)
+                // Apply patch ke server text
+                var dmp = new DiffMatchPatch.diff_match_patch();
+                var patches = dmp.patch_fromText(patchText);
+                var result = dmp.patch_apply(patches, serverContent);
+                var newContent = (string)result[0];
+                var success = (bool[])result[1];
+
+                // Cek apakah semua patch berhasil
+                var allSuccess = true;
+                foreach (var s in success)
                 {
-                    var newVersion = serverVersion + 1;
-                    _docStates[entryId] = new DocState { Content = htmlContent, Version = newVersion };
+                    if (!s) { allSuccess = false; break; }
+                }
 
-                    // Broadcast ke peers (bukan pengirim)
+                if (allSuccess && newContent != serverContent)
+                {
+                    // Patch berhasil — update server state
+                    current.Content = newContent;
+                    current.Version++;
+
+                    // Broadcast patch ke peers (bukan pengirim)
+                    // Peers akan apply patch ini ke shadow dan editor mereka
                     await Clients.OthersInGroup(GroupName(entryId))
-                        .SendAsync("ReceiveUpdate", htmlContent, newVersion);
+                        .SendAsync("ReceivePatch", patchText, current.Version);
 
-                    // Ack ke pengirim: version baru + content yang disimpan server
-                    // Client pakai ini untuk update _serverContent dan _serverVersion
-                    await Clients.Caller
-                        .SendAsync("UpdateAck", newVersion, htmlContent);
+                    // Ack ke pengirim: patch accepted, kirim version baru
+                    await Clients.Caller.SendAsync("PatchAck", current.Version);
+                }
+                else if (!allSuccess)
+                {
+                    // Patch gagal — kirim full state ke pengirim untuk resync
+                    _logger.LogWarning("[Collab] Patch failed for {EntryId}, sending full resync", entryId);
+                    await Clients.Caller.SendAsync("FullResync", current.Content, current.Version);
                 }
                 else
                 {
-                    // Client base version tidak match — ada update dari peer yang belum di-apply
-                    // Kirim Resync: server content terbaru + version
-                    // Client harus merge ulang pending-nya di atas state ini, lalu kirim ulang
-                    _logger.LogDebug(
-                        "[Collab] Version mismatch for {EntryId}: client base={BaseVer}, server={ServerVer}. Sending Resync.",
-                        entryId, baseVersion, serverVersion);
-
-                    await Clients.Caller
-                        .SendAsync("Resync", current!.Content, current.Version);
+                    // Patch berhasil tapi content tidak berubah (no-op)
+                    await Clients.Caller.SendAsync("PatchAck", current.Version);
                 }
             }
             finally
@@ -107,6 +116,62 @@ namespace NoteApp.Hubs
                 lock_.Release();
             }
         }
+
+        /// <summary>
+        /// Client kirim full content (untuk initial set atau force sync).
+        /// </summary>
+        public async Task SendFullContent(string entryId, string content)
+        {
+            if (string.IsNullOrEmpty(content)) return;
+
+            var lock_ = _locks.GetOrAdd(entryId, _ => new SemaphoreSlim(1, 1));
+            await lock_.WaitAsync();
+            try
+            {
+                var current = _docStates.GetOrAdd(entryId, _ => new DocState());
+                current.Content = content;
+                current.Version++;
+
+                // Broadcast full state ke peers
+                await Clients.OthersInGroup(GroupName(entryId))
+                    .SendAsync("ReceiveDocState", content, current.Version);
+
+                await Clients.Caller.SendAsync("PatchAck", current.Version);
+            }
+            finally
+            {
+                lock_.Release();
+            }
+        }
+
+        /// <summary>
+        /// BACKWARD COMPAT: Client lama (collaboration.js) masih pakai SendHtmlUpdate.
+        /// Ini menerima full content dan broadcast sebagai ReceiveUpdate + UpdateAck.
+        /// </summary>
+        public async Task SendHtmlUpdate(string entryId, string htmlContent, long clientVersion)
+        {
+            if (string.IsNullOrEmpty(htmlContent)) return;
+
+            var lock_ = _locks.GetOrAdd(entryId, _ => new SemaphoreSlim(1, 1));
+            await lock_.WaitAsync();
+            try
+            {
+                var current = _docStates.GetOrAdd(entryId, _ => new DocState());
+                var newVersion = current.Version + 1;
+                current.Content = htmlContent;
+                current.Version = newVersion;
+
+                await Clients.OthersInGroup(GroupName(entryId))
+                    .SendAsync("ReceiveUpdate", htmlContent, newVersion);
+
+                await Clients.Caller.SendAsync("UpdateAck", newVersion, htmlContent);
+            }
+            finally
+            {
+                lock_.Release();
+            }
+        }
+
 
         public async Task SendAwareness(string entryId, AwarenessData awarenessData)
         {

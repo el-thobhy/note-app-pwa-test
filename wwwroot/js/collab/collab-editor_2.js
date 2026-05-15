@@ -1,60 +1,24 @@
 /**
- * Collaborative Editor v2 - Race-condition-free real-time collaboration
+ * Collaborative Editor v2 - Differential Synchronization
  * 
- * SignalR (@microsoft/signalr) + diff-match-patch
- * 
- * ============================================================
- * STRATEGI ANTI RACE CONDITION:
- * ============================================================
- * 
- * 1. IN-FLIGHT GUARD: Hanya 1 request boleh in-flight ke server.
- *    Kalau ada request in-flight, perubahan baru di-queue sebagai pending.
- *    Setelah ack/resync diterima, baru kirim pending berikutnya.
+ * Menggunakan "shadow copy" approach (Neil Fraser's Differential Sync):
+ * - Client menyimpan "shadow" = copy terakhir yang server tahu
+ * - Saat user edit: diff(shadow, current) → kirim PATCH ke server
+ * - Saat terima patch dari peer: apply patch ke shadow DAN ke editor
+ * - Shadow selalu sinkron dengan server state
  *
- * 2. STRICT VERSION: Server pakai strict equality (baseVersion == serverVersion).
- *    Kalau 2 client kirim bersamaan, yang kedua akan di-reject (Resync).
- *    Client yang di-reject harus merge ulang di atas state terbaru.
+ * Kenapa ini menghindari race condition:
+ * - Patch bersifat INCREMENTAL, bukan full-replace
+ * - 2 user ketik bersamaan → 2 patch yang BERBEDA dikirim
+ * - Server apply patch A, lalu patch B → kedua perubahan preserved
+ * - Tidak ada "siapa yang menang" — semua patch di-apply berurutan
  *
- * 3. CONFIRMED BASE: Merge selalu pakai _confirmedContent sebagai base.
- *    _confirmedContent HANYA di-update setelah UpdateAck dari server.
- *    Ini memastikan patch yang dibuat selalu relatif terhadap state yang benar.
- *
- * 4. RESYNC RECOVERY: Saat server reject (Resync), client:
- *    - Update _confirmedContent dan _confirmedVersion ke state server
- *    - Merge ulang pending di atas state baru
- *    - Kirim ulang otomatis
- *
- * ============================================================
- * DEPENDENCIES:
- * ============================================================
+ * Dependencies:
  *   - signalr.min.js (@microsoft/signalr)
  *   - diff_match_patch.js
  *   - TinyMCE (sudah diinisialisasi)
  *
- * ============================================================
- * CARA PAKAI:
- * ============================================================
- * 
- *   tinymce.init({
- *       selector: '#editor',
- *       setup: function(editor) {
- *           editor.on('init', function() {
- *               CollabEditor.attach(editor, {
- *                   userName: 'Budi',
- *                   avatar: '/img/budi.png',
- *                   documentId: 'entry-123',
- *                   hubUrl: '/hubs/collaboration',
- *                   debounceMs: 200,
- *                   maxDelayMs: 1500
- *               });
- *           });
- *       }
- *   });
- *
- * ============================================================
- * PUBLIC API:
- * ============================================================
- * 
+ * API:
  *   CollabEditor.attach(editor, options)
  *   CollabEditor.detach()
  *   CollabEditor.getContent()
@@ -69,7 +33,7 @@
 var CollabEditor = (function () {
     'use strict';
 
-    // === PRIVATE STATE ===
+    // === STATE ===
     var _config = {};
     var _dmp = null;
     var _connection = null;
@@ -77,20 +41,17 @@ var CollabEditor = (function () {
     var _attached = false;
     var _connected = false;
 
-    // === CONFIRMED STATE (hanya update setelah ack dari server) ===
-    // Ini adalah "ground truth" — base untuk semua merge operations
-    var _confirmedContent = '';
-    var _confirmedVersion = 0;
+    // Shadow copy: representasi terakhir yang server tahu
+    // Selalu di-update SETELAH patch berhasil dikirim (ack) atau diterima dari peer
+    var _shadow = '';
 
-    // === IN-FLIGHT STATE ===
-    // Content yang sedang dikirim ke server, menunggu ack/resync
-    var _inflightContent = null;
-    var _inflightVersion = null; // baseVersion yang dikirim
+    // Apakah ada patch yang sedang in-flight ke server
+    var _inflight = false;
+    // Patch text yang sedang in-flight (untuk recovery kalau gagal)
+    var _inflightPatch = null;
 
-    // === PENDING STATE ===
-    // Perubahan lokal yang belum dikirim (karena ada in-flight)
-    // null = tidak ada perubahan baru sejak terakhir kirim
-    var _pendingContent = null;
+    // Flag: ada perubahan baru yang belum dikirim
+    var _dirty = false;
 
     // Flags
     var _isRemoteUpdate = false;
@@ -101,19 +62,19 @@ var CollabEditor = (function () {
     var _maxDelayTimer = null;
     var _typingTimer = null;
 
-    // Bound handlers for cleanup
+    // Bound handlers
     var _boundHandlers = {};
 
-    // Peers tracking
+    // Peers
     var _peers = new Map();
 
-    // === DEFAULT OPTIONS ===
+    // === DEFAULTS ===
     var _defaults = {
         userName: 'Anonymous',
         avatar: '',
         documentId: 'default',
         hubUrl: '/hubs/collaboration',
-        debounceMs: 200,
+        debounceMs: 250,
         maxDelayMs: 1500,
         onUserListChanged: null,
         onConnectionChanged: null,
@@ -123,73 +84,18 @@ var CollabEditor = (function () {
 
     // === PRIVATE METHODS ===
 
-    function _initDiffMatchPatch() {
+    function _initDmp() {
         if (typeof diff_match_patch === 'undefined') {
-            console.warn('[CollabEditor] diff_match_patch not loaded, merge disabled.');
-            return true;
+            console.error('[CollabEditor] diff_match_patch is REQUIRED.');
+            return false;
         }
         _dmp = new diff_match_patch();
-        _dmp.Patch_Timeout = 1;
+        _dmp.Patch_Timeout = 2.0;
+        // Turunkan threshold supaya patch lebih toleran terhadap pergeseran posisi
+        _dmp.Patch_DeleteThreshold = 0.6;
+        _dmp.Match_Threshold = 0.6;
+        _dmp.Match_Distance = 1500;
         return true;
-    }
-
-    /**
-     * 3-way merge: apply perubahan dari `base→local` ke atas `server`.
-     * 
-     * @param {string} base - Titik divergence (confirmed content saat user mulai edit)
-     * @param {string} local - Konten lokal user
-     * @param {string} server - Konten server terbaru
-     * @returns {string} Merged content
-     */
-    function _merge3(base, local, server) {
-        if (local === server) return local;
-        if (local === base) return server; // user tidak ubah apa-apa, ambil server
-        if (server === base) return local; // server tidak berubah, ambil local
-        if (!_dmp) return local; // no merge capability, prefer local
-
-        try {
-            // Buat patch dari base → local (apa yang user ubah)
-            var patches = _dmp.patch_make(base, local);
-            // Apply patch ke atas server content
-            var result = _dmp.patch_apply(patches, server);
-            var merged = result[0];
-            var success = result[1];
-
-            var failCount = success.filter(function (s) { return !s; }).length;
-            if (failCount > 0) {
-                console.debug('[CollabEditor] ' + failCount + '/' + success.length + ' patches failed — server wins for conflicts');
-            }
-
-            return merged;
-        } catch (e) {
-            console.warn('[CollabEditor] Merge error, preferring local:', e);
-            return local;
-        }
-    }
-
-    /**
-     * Hitung "effective content" — apa yang seharusnya ditampilkan di editor.
-     * Ini adalah merge dari semua layer: confirmed + inflight + pending
-     */
-    function _getEffectiveContent() {
-        // Start dari confirmed
-        var effective = _confirmedContent;
-
-        // Layer 1: apply inflight changes
-        if (_inflightContent !== null) {
-            effective = _inflightContent;
-        }
-
-        // Layer 2: apply pending changes di atas effective
-        if (_pendingContent !== null) {
-            // Base untuk pending = state sebelum pending dimulai
-            // Kalau ada inflight, base = inflight content (karena pending dimulai setelah inflight dikirim)
-            // Kalau tidak ada inflight, base = confirmed content
-            var pendingBase = _inflightContent !== null ? _inflightContent : _confirmedContent;
-            effective = _merge3(pendingBase, _pendingContent, effective);
-        }
-
-        return effective;
     }
 
     function _buildConnection() {
@@ -203,34 +109,32 @@ var CollabEditor = (function () {
             .withAutomaticReconnect([0, 1000, 3000, 5000])
             .build();
 
-        _registerHubHandlers();
+        _registerHandlers();
         return true;
     }
 
-    function _registerHubHandlers() {
+    function _registerHandlers() {
 
-        // === ReceiveDocState: State awal saat join ===
+        // === ReceiveDocState: Full state saat join atau resync ===
         _connection.on('ReceiveDocState', function (content, version) {
             if (!_editor) return;
 
             _isRemoteUpdate = true;
             try {
-                _confirmedContent = content || '';
-                _confirmedVersion = version || 0;
+                // Reset shadow ke server state
+                _shadow = content || '';
 
-                // Reset inflight — server state sudah fresh
-                _inflightContent = null;
-                _inflightVersion = null;
-
-                if (_pendingContent !== null) {
-                    // Ada pending — merge ke atas state baru
-                    var merged = _merge3(_confirmedContent, _pendingContent, _confirmedContent);
-                    _pendingContent = merged;
-                    _updateEditor(merged);
-                    // Schedule send
-                    _scheduleSend();
+                // Kalau editor punya perubahan lokal yang belum dikirim,
+                // kita perlu preserve-nya
+                var currentContent = _editor.getContent();
+                if (currentContent !== _shadow && _dirty) {
+                    // Ada local edits — jangan overwrite, biarkan dirty flag
+                    // Nanti _doSend akan diff dari shadow baru ke current
+                    // Ini otomatis "merge" karena patch = diff(shadow_baru, current)
+                    // yang hanya berisi perubahan lokal
                 } else {
-                    _updateEditor(_confirmedContent);
+                    _editor.setContent(_shadow);
+                    _dirty = false;
                 }
             } finally {
                 _isRemoteUpdate = false;
@@ -239,28 +143,38 @@ var CollabEditor = (function () {
             _fireCallback('onRemoteEdit');
         });
 
-        // === ReceiveUpdate: Update dari peer (broadcast) ===
-        _connection.on('ReceiveUpdate', function (serverContent, serverVersion) {
-            if (!_editor || !serverContent) return;
-
-            // Ignore stale updates
-            if (serverVersion !== undefined && serverVersion <= _confirmedVersion) return;
+        // === ReceivePatch: Patch dari peer ===
+        _connection.on('ReceivePatch', function (patchText, version) {
+            if (!_editor || !patchText) return;
 
             _isRemoteUpdate = true;
             try {
-                // Update confirmed state
-                var oldConfirmed = _confirmedContent;
-                _confirmedContent = serverContent;
-                _confirmedVersion = serverVersion;
+                var patches = _dmp.patch_fromText(patchText);
 
-                // Recalculate effective content
-                if (_inflightContent !== null || _pendingContent !== null) {
-                    // Ada local changes — merge dan tampilkan
-                    var effective = _getEffectiveContent();
-                    _updateEditor(effective);
-                } else {
-                    // Tidak ada local changes — apply langsung
-                    _updateEditor(serverContent);
+                // 1. Apply patch ke shadow
+                var shadowResult = _dmp.patch_apply(patches, _shadow);
+                var newShadow = shadowResult[0];
+                var shadowSuccess = shadowResult[1];
+
+                // 2. Apply patch ke editor content
+                var currentContent = _editor.getContent();
+                var editorResult = _dmp.patch_apply(patches, currentContent);
+                var newEditorContent = editorResult[0];
+                var editorSuccess = editorResult[1];
+
+                // Update shadow (selalu, karena server sudah apply)
+                _shadow = newShadow;
+
+                // Update editor kalau patch berhasil dan content berubah
+                if (newEditorContent !== currentContent) {
+                    var bookmark = null;
+                    try { bookmark = _editor.selection.getBookmark(2, true); } catch (e) { }
+
+                    _editor.setContent(newEditorContent);
+
+                    if (bookmark) {
+                        try { _editor.selection.moveToBookmark(bookmark); } catch (e) { }
+                    }
                 }
             } finally {
                 _isRemoteUpdate = false;
@@ -269,61 +183,43 @@ var CollabEditor = (function () {
             _fireCallback('onRemoteEdit');
         });
 
-        // === UpdateAck: Server accepted our update ===
-        _connection.on('UpdateAck', function (newVersion, acceptedContent) {
-            // Server confirmed our inflight content
-            _confirmedContent = acceptedContent || _inflightContent || _confirmedContent;
-            _confirmedVersion = newVersion;
+        // === PatchAck: Server accepted our patch ===
+        _connection.on('PatchAck', function (version) {
+            _inflight = false;
+            _inflightPatch = null;
 
-            // Clear inflight
-            _inflightContent = null;
-            _inflightVersion = null;
-
-            // Kalau ada pending, kirim sekarang
-            if (_pendingContent !== null) {
+            // Kalau ada perubahan baru yang terjadi saat in-flight, kirim sekarang
+            if (_dirty) {
                 _doSend();
             }
         });
 
-        // === Resync: Server rejected our update (version mismatch) ===
-        _connection.on('Resync', function (serverContent, serverVersion) {
+        // === FullResync: Server gagal apply patch kita, kirim full state ===
+        _connection.on('FullResync', function (content, version) {
             _isRemoteUpdate = true;
             try {
-                // Server bilang: "base version kamu salah, ini state terbaru"
-                // Kita harus merge ulang inflight + pending di atas state baru
+                _inflight = false;
+                _inflightPatch = null;
 
-                var oldConfirmed = _confirmedContent;
-                _confirmedContent = serverContent;
-                _confirmedVersion = serverVersion;
+                // Reset shadow ke server state
+                _shadow = content || '';
 
-                // Merge inflight content yang ditolak ke atas server state
-                var recoveredLocal = _inflightContent;
-                if (_pendingContent !== null) {
-                    // Gabungkan inflight + pending sebagai "total local changes"
-                    recoveredLocal = _pendingContent;
-                }
-
-                // Clear inflight (sudah ditolak)
-                _inflightContent = null;
-                _inflightVersion = null;
-
-                if (recoveredLocal !== null && recoveredLocal !== serverContent) {
-                    // Merge local changes ke atas server state baru
-                    var merged = _merge3(oldConfirmed, recoveredLocal, serverContent);
-                    _pendingContent = merged;
-                    _updateEditor(merged);
-                    // Kirim ulang segera (tanpa debounce penuh, tapi beri sedikit jeda)
-                    setTimeout(function () { _doSend(); }, 50);
+                var currentContent = _editor.getContent();
+                if (currentContent !== _shadow) {
+                    // Ada local edits — set dirty supaya dikirim ulang
+                    // Patch berikutnya = diff(shadow_baru, current) = hanya local changes
+                    _dirty = true;
+                    _scheduleSend();
                 } else {
-                    _pendingContent = null;
-                    _updateEditor(serverContent);
+                    _editor.setContent(_shadow);
+                    _dirty = false;
                 }
             } finally {
                 _isRemoteUpdate = false;
             }
         });
 
-        // === Awareness (typing indicators) ===
+        // === Awareness ===
         _connection.on('ReceiveAwareness', function (data) {
             if (data.isTyping) {
                 _showPeerTyping(data.connectionId, data.displayName, data.color);
@@ -344,23 +240,6 @@ var CollabEditor = (function () {
         });
     }
 
-    /**
-     * Update editor content dengan preserve cursor position.
-     */
-    function _updateEditor(content) {
-        if (!_editor) return;
-        if (_editor.getContent() === content) return; // no-op
-
-        var bookmark = null;
-        try { bookmark = _editor.selection.getBookmark(2, true); } catch (e) { }
-
-        _editor.setContent(content);
-
-        if (bookmark) {
-            try { _editor.selection.moveToBookmark(bookmark); } catch (e) { }
-        }
-    }
-
     function _startConnection() {
         _connection.start().then(function () {
             _connected = true;
@@ -374,9 +253,8 @@ var CollabEditor = (function () {
 
         _connection.onreconnected(function () {
             _connected = true;
-            _confirmedVersion = 0;
-            _inflightContent = null;
-            _inflightVersion = null;
+            _inflight = false;
+            _inflightPatch = null;
             _connection.invoke('JoinEntry', _config.documentId, _config.userName, _config.avatar);
             _fireConnectionChanged('connected');
         });
@@ -413,35 +291,51 @@ var CollabEditor = (function () {
     }
 
     /**
-     * Kirim pending content ke server.
+     * Core sync: diff shadow vs current editor → kirim patch ke server.
      * 
-     * GUARD: Tidak boleh kirim kalau:
-     * - Tidak connected
-     * - Tidak ada pending
-     * - Ada request in-flight (tunggu ack/resync dulu)
+     * Ini adalah inti dari Differential Sync:
+     * - shadow = apa yang server terakhir tahu
+     * - current = apa yang user lihat sekarang
+     * - diff(shadow, current) = perubahan yang HANYA user ini buat
+     * - Kirim patch ini ke server
+     * - Update shadow = current (karena setelah ack, server tahu state ini)
      */
     function _doSend() {
-        if (!_connected || _pendingContent === null) return;
+        if (!_connected || !_editor) return;
 
-        // IN-FLIGHT GUARD: tunggu ack/resync sebelum kirim lagi
-        if (_inflightContent !== null) {
-            // Sudah ada yang in-flight, pending akan dikirim setelah ack
+        // In-flight guard: tunggu ack sebelum kirim lagi
+        if (_inflight) {
+            _dirty = true; // tandai supaya dikirim setelah ack
             return;
         }
 
-        // Merge pending di atas confirmed untuk menghasilkan content yang dikirim
-        var toSend = _pendingContent;
+        var currentContent = _editor.getContent();
 
-        // Kalau pending sama dengan confirmed, tidak perlu kirim
-        if (toSend === _confirmedContent) {
-            _pendingContent = null;
+        // Kalau tidak ada perubahan dari shadow, skip
+        if (currentContent === _shadow) {
+            _dirty = false;
             return;
         }
 
-        // Pindahkan pending ke inflight
-        _inflightContent = toSend;
-        _inflightVersion = _confirmedVersion; // base version yang kita pakai
-        _pendingContent = null;
+        // Buat diff: shadow → current
+        var diffs = _dmp.diff_main(_shadow, currentContent);
+        if (diffs.length > 2) {
+            _dmp.diff_cleanupEfficiency(diffs);
+        }
+        var patches = _dmp.patch_make(_shadow, diffs);
+        var patchText = _dmp.patch_toText(patches);
+
+        if (!patchText || patches.length === 0) {
+            _dirty = false;
+            return;
+        }
+
+        // Update shadow SEKARANG (optimistic) — karena kita expect server akan accept
+        // Kalau server reject (FullResync), shadow akan di-reset
+        _shadow = currentContent;
+        _dirty = false;
+        _inflight = true;
+        _inflightPatch = patchText;
 
         // Clear max delay timer
         if (_maxDelayTimer) {
@@ -449,20 +343,22 @@ var CollabEditor = (function () {
             _maxDelayTimer = null;
         }
 
-        _connection.invoke('SendHtmlUpdate', _config.documentId, toSend, _inflightVersion)
+        _connection.invoke('SendPatch', _config.documentId, patchText)
             .catch(function (err) {
-                console.warn('[CollabEditor] SendHtmlUpdate failed:', err);
-                // Kembalikan inflight ke pending untuk retry
-                if (_pendingContent !== null) {
-                    // Ada pending baru — merge inflight + pending
-                    _pendingContent = _merge3(_confirmedContent, _pendingContent, _inflightContent);
-                } else {
-                    _pendingContent = _inflightContent;
-                }
-                _inflightContent = null;
-                _inflightVersion = null;
-                // Retry setelah delay
-                setTimeout(function () { _scheduleSend(); }, 1000);
+                console.warn('[CollabEditor] SendPatch failed:', err);
+                // Rollback shadow — kita tidak tahu apakah server apply atau tidak
+                // Safest: request full resync
+                _inflight = false;
+                _inflightPatch = null;
+                _dirty = true;
+                // Shadow tetap di posisi lama? Tidak, karena kita sudah update.
+                // Kirim full content sebagai fallback
+                _connection.invoke('SendFullContent', _config.documentId, currentContent)
+                    .then(function () {
+                        _shadow = currentContent;
+                        _dirty = false;
+                    })
+                    .catch(function () { });
             });
 
         _fireCallback('onLocalEdit');
@@ -471,25 +367,17 @@ var CollabEditor = (function () {
     function _onContentChange() {
         if (_isRemoteUpdate || !_attached || !_editor || !_connected) return;
 
-        var htmlContent = _editor.getContent();
-
-        // Ignore kalau content sama dengan yang sudah confirmed + inflight
-        var currentEffective = _getEffectiveContent();
-        if (htmlContent === currentEffective && htmlContent === _confirmedContent) return;
-
+        _dirty = true;
         _setTyping(true);
 
-        // Simpan sebagai pending
-        _pendingContent = htmlContent;
-
-        // Schedule send (dengan debounce)
+        // Schedule send (debounced)
         _scheduleSend();
 
-        // Max delay: force send setelah N ms
+        // Max delay: force send
         if (!_maxDelayTimer) {
             _maxDelayTimer = setTimeout(function () {
                 _maxDelayTimer = null;
-                if (_pendingContent !== null && _connected) {
+                if (_dirty && _connected) {
                     clearTimeout(_sendDebounce);
                     _doSend();
                 }
@@ -621,11 +509,10 @@ var CollabEditor = (function () {
         _dmp = null;
         _attached = false;
         _connected = false;
-        _confirmedContent = '';
-        _confirmedVersion = 0;
-        _inflightContent = null;
-        _inflightVersion = null;
-        _pendingContent = null;
+        _shadow = '';
+        _inflight = false;
+        _inflightPatch = null;
+        _dirty = false;
         _isRemoteUpdate = false;
         _isTyping = false;
         _sendDebounce = null;
@@ -643,36 +530,29 @@ var CollabEditor = (function () {
                 return;
             }
 
-            if (_attached) {
-                this.detach();
-            }
+            if (_attached) this.detach();
 
             _config = Object.assign({}, _defaults, options);
             _editor = editor;
 
-            _initDiffMatchPatch();
+            if (!_initDmp()) return;
             if (!_buildConnection()) return;
 
-            _confirmedContent = _editor.getContent();
+            _shadow = _editor.getContent();
             _bindEditorEvents();
             _attached = true;
             _startConnection();
 
-            console.log('[CollabEditor] Attached | Doc: ' + _config.documentId + ' | User: ' + _config.userName);
+            console.log('[CollabEditor] Attached (DiffSync) | Doc: ' + _config.documentId + ' | User: ' + _config.userName);
         },
 
         detach: function () {
             clearTimeout(_sendDebounce);
             clearTimeout(_maxDelayTimer);
             clearTimeout(_typingTimer);
-
             _setTyping(false);
             _unbindEditorEvents();
-
-            if (_connection) {
-                _connection.stop();
-            }
-
+            if (_connection) _connection.stop();
             _resetState();
             console.log('[CollabEditor] Detached.');
         },
@@ -687,34 +567,21 @@ var CollabEditor = (function () {
             _isRemoteUpdate = true;
             _editor.setContent(content);
             _isRemoteUpdate = false;
-
-            _pendingContent = content;
-            _doSend();
+            // Kirim full content ke server
+            if (_connected) {
+                _connection.invoke('SendFullContent', _config.documentId, content)
+                    .then(function () { _shadow = content; })
+                    .catch(function () { });
+            }
         },
 
-        sendChanges: function () {
-            _doSend();
-        },
+        sendChanges: function () { _doSend(); },
+        disconnect: function () { if (_connection) _connection.stop(); },
+        reconnect: function () { if (_connection && !_connected) _startConnection(); },
+        isConnected: function () { return _connected; },
+        isReady: function () { return _attached; },
 
-        disconnect: function () {
-            if (_connection) _connection.stop();
-        },
-
-        reconnect: function () {
-            if (_connection && !_connected) _startConnection();
-        },
-
-        isConnected: function () {
-            return _connected;
-        },
-
-        isReady: function () {
-            return _attached;
-        },
-
-        get _applyingRemote() {
-            return _isRemoteUpdate;
-        }
+        get _applyingRemote() { return _isRemoteUpdate; }
     };
 
 })();
