@@ -8,19 +8,25 @@
  *   _pendingContent = konten lokal terbaru yang belum dikonfirmasi server (null = tidak ada pending)
  *
  * Alur kirim:
- *   user ketik → simpan ke _pendingContent → schedule debounce
- *   debounce fire → merge(_serverContent, _pendingContent) → kirim ke server
- *   UpdateAck → _serverContent = apa yang baru dikonfirmasi, _serverVersion = newVersion
+ *   user ketik → simpan ke _pendingContent → schedule debounce (300ms)
+ *   debounce fire ATAU max delay (2s) → merge(_serverContent, _pendingContent) → kirim ke server
+ *   UpdateAck → cek apakah ada ketikan baru sejak kirim:
+ *     - tidak ada → reset pending & mergeBase
+ *     - ada → update mergeBase ke state terkonfirmasi, reschedule send
  *
  * Alur terima dari peer:
  *   ReceiveUpdate → simpan ke _serverContent + _serverVersion
  *                 → kalau tidak ada pending: apply ke editor
  *                 → kalau ada pending: apply merged ke editor, reschedule send
- *                   (merge dilakukan di sini supaya editor langsung update,
- *                    tapi _scheduleSend juga merge ulang saat fire untuk pakai data terbaru)
  *
- * Merge selalu dilakukan TEPAT SEBELUM kirim menggunakan data terbaru —
- * tidak bisa di-cancel oleh ketikan baru karena merge baca this._pendingContent saat fire.
+ * Reconnect:
+ *   ReceiveDocState → kalau ada pending: merge pending ke atas state baru, pertahankan pending
+ *                   → kalau tidak ada pending: apply langsung
+ *
+ * Proteksi data loss:
+ *   1. UpdateAck hanya reset pending kalau tidak ada ketikan baru (fix race condition)
+ *   2. Max delay 2s — force send walaupun user masih ngetik (kurangi window of loss)
+ *   3. Reconnect merge — pending tidak dibuang saat reconnect, di-merge ke state baru
  */
 
 class CollaborationClient {
@@ -48,6 +54,8 @@ class CollaborationClient {
         this._mergeBase      = null;
 
         this._sendDebounce = null;
+        this._maxDelayTimer = null;   // Force send setelah max delay
+        this._maxDelay      = 2000;   // 2 detik max tanpa kirim
         this._isTyping     = false;
         this._typingTimer  = null;
 
@@ -97,15 +105,30 @@ class CollaborationClient {
 
     _registerHandlers() {
         // State awal saat join — apply langsung, set sebagai server content
+        // Kalau ada pending (reconnect case), merge dulu sebelum overwrite
         this.connection.on('ReceiveDocState', (content, version) => {
             if (!content || !this.editor) return;
             this._applyingRemote = true;
             try {
-                this.editor.setContent(content);
-                this._serverContent  = content;
-                this._serverVersion  = version ?? 0;
-                this._pendingContent = null;
-                this._mergeBase      = null;
+                if (this._pendingContent !== null && this._dmp) {
+                    // Reconnect dengan pending — merge perubahan lokal ke atas state server
+                    const base = this._mergeBase ?? this._serverContent;
+                    const merged = this._merge(content, this._pendingContent);
+                    this.editor.setContent(merged);
+                    this._serverContent  = content;
+                    this._serverVersion  = version ?? 0;
+                    // Pertahankan pending supaya dikirim ulang
+                    this._pendingContent = merged;
+                    this._mergeBase      = base;
+                    // Schedule send supaya pending terkirim ke server
+                    this._scheduleSend();
+                } else {
+                    this.editor.setContent(content);
+                    this._serverContent  = content;
+                    this._serverVersion  = version ?? 0;
+                    this._pendingContent = null;
+                    this._mergeBase      = null;
+                }
             } finally {
                 this._applyingRemote = false;
             }
@@ -159,9 +182,22 @@ class CollaborationClient {
             if (this._lastSentContent !== undefined) {
                 this._serverContent = this._lastSentContent;
             }
-            this._serverVersion  = newVersion;
-            this._pendingContent = null;
-            this._mergeBase      = null; // reset — next ketik akan snapshot ulang
+            this._serverVersion = newVersion;
+
+            // Fix race condition: hanya reset pending kalau TIDAK ada ketikan baru
+            // sejak terakhir kirim. Kalau _pendingContent sudah berubah dari yang dikirim,
+            // berarti user ketik lagi antara send dan ack — jangan buang.
+            if (this._pendingContent === null ||
+                this._pendingContent === this._lastSentContent) {
+                this._pendingContent = null;
+                this._mergeBase      = null;
+            } else {
+                // Ada ketikan baru sejak terakhir kirim — update mergeBase ke state terkonfirmasi
+                // supaya merge berikutnya pakai base yang benar
+                this._mergeBase = this._serverContent;
+                // Reschedule send untuk pending yang masih ada
+                this._scheduleSend();
+            }
         });
 
         this.connection.on('ReceiveAwareness', (data) => {
@@ -192,7 +228,6 @@ class CollaborationClient {
 
         // Snapshot _serverContent sebagai titik divergence saat user MULAI ketik.
         // Hanya di-set sekali per "sesi ketik" — tidak di-reset selama pending masih ada.
-        // Ini yang dipakai patch_make supaya diff selalu akurat dari titik awal perubahan.
         if (this._pendingContent === null) {
             this._mergeBase = this._serverContent;
         }
@@ -203,6 +238,18 @@ class CollaborationClient {
         // Schedule debounced send
         this._scheduleSend();
 
+        // Max delay: force send setelah 2 detik walaupun user masih ngetik
+        // Ini mengurangi window of loss dan memastikan peer dapat update periodik
+        if (!this._maxDelayTimer) {
+            this._maxDelayTimer = setTimeout(() => {
+                this._maxDelayTimer = null;
+                if (this._pendingContent !== null && this._connected) {
+                    clearTimeout(this._sendDebounce);
+                    this._doSend();
+                }
+            }, this._maxDelay);
+        }
+
         clearTimeout(this._typingTimer);
         this._typingTimer = setTimeout(() => this._setTyping(false), 1500);
     }
@@ -210,30 +257,39 @@ class CollaborationClient {
     /**
      * Schedule debounced send.
      * Merge dilakukan DI SINI saat debounce fire — bukan saat ReceiveUpdate.
-     * Dengan begitu selalu pakai _pendingContent dan _serverContent terbaru,
-     * tidak bisa di-cancel oleh ketikan baru.
      */
     _scheduleSend() {
         clearTimeout(this._sendDebounce);
-        this._sendDebounce = setTimeout(() => {
-            if (!this._connected || this._pendingContent === null) return;
+        this._sendDebounce = setTimeout(() => this._doSend(), 300);
+    }
 
-            // Merge tepat sebelum kirim — pakai state terbaru
-            const toSend = this._merge(this._serverContent, this._pendingContent);
+    /**
+     * Eksekusi merge + kirim ke server.
+     * Dipisah dari _scheduleSend supaya bisa dipanggil dari max delay timer juga.
+     */
+    _doSend() {
+        if (!this._connected || this._pendingContent === null) return;
 
-            // Simpan apa yang dikirim supaya UpdateAck bisa update _serverContent
-            this._lastSentContent = toSend;
+        // Merge tepat sebelum kirim — pakai state terbaru
+        const toSend = this._merge(this._serverContent, this._pendingContent);
 
-            const versionSnapshot = this._serverVersion;
+        // Simpan apa yang dikirim supaya UpdateAck bisa compare
+        this._lastSentContent = toSend;
 
-            this.connection.invoke(
-                'SendHtmlUpdate',
-                this.entryId,
-                toSend,
-                versionSnapshot
-            ).catch(err => console.warn('[Collab] SendHtmlUpdate failed:', err));
+        // Clear max delay timer karena kita sudah kirim
+        if (this._maxDelayTimer) {
+            clearTimeout(this._maxDelayTimer);
+            this._maxDelayTimer = null;
+        }
 
-        }, 300);
+        const versionSnapshot = this._serverVersion;
+
+        this.connection.invoke(
+            'SendHtmlUpdate',
+            this.entryId,
+            toSend,
+            versionSnapshot
+        ).catch(err => console.warn('[Collab] SendHtmlUpdate failed:', err));
     }
 
     /**
@@ -371,6 +427,7 @@ class CollaborationClient {
     destroy() {
         clearTimeout(this._sendDebounce);
         clearTimeout(this._typingTimer);
+        clearTimeout(this._maxDelayTimer);
         this._setTyping(false);
         if (this.connection) {
             this.connection.stop();
