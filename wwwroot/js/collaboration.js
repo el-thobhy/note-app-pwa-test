@@ -114,16 +114,34 @@ class CollaborationClient {
     _registerHandlers() {
 
         // ── ReceiveDocState ──────────────────────────────────────────
-        // Diterima saat join. Apply langsung ke editor.
+        // Diterima saat join, hanya kalau server punya content (tidak kosong).
+        // Kalau server content kosong, server tidak akan kirim event ini,
+        // jadi handler ini hanya dipanggil kalau ada content yang valid.
+        //
+        // Kasus: user pertama join entry yang belum pernah diedit via collab
+        //   → server tidak kirim ReceiveDocState → editor tetap pakai content dari AJAX
+        //
+        // Kasus: user join entry yang sudah ada session aktif (ada peer)
+        //   → server kirim ReceiveDocState dengan content terbaru → sync ke editor
         this.connection.on('ReceiveDocState', (content, version) => {
-            if (!this.editor) return;
+            if (!this.editor || !content) return;
 
             this._serverVersion = version ?? 0;
             this._inflight      = false;
 
+            // Hanya replace editor kalau server content berbeda dari yang sudah ada
+            // Ini mencegah overwrite content yang baru di-load dari DB via AJAX
+            const currentContent = this.editor.getContent();
+            if (content === currentContent) {
+                // Sudah sama, tidak perlu update editor
+                return;
+            }
+
+            // Server punya content yang berbeda — ini artinya ada peer yang sudah edit
+            // Replace editor dengan state server yang lebih baru
             this._applyingRemote = true;
             try {
-                this.editor.setContent(content || '');
+                this.editor.setContent(content);
             } finally {
                 this._applyingRemote = false;
             }

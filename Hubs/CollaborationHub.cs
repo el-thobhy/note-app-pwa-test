@@ -65,20 +65,24 @@ namespace NoteApp.Hubs
             var docLock = _locks.GetOrAdd(entryId, _ => new SemaphoreSlim(1, 1));
             await docLock.WaitAsync();
             DocState state;
+            bool isNewState;
             try
             {
-                state = _docStates.GetOrAdd(entryId, _ =>
+                isNewState = !_docStates.ContainsKey(entryId);
+                state = _docStates.GetOrAdd(entryId, _ => new DocState());
+
+                // Kalau state baru (belum ada di memory), load dari DB
+                if (isNewState && string.IsNullOrEmpty(state.Content))
                 {
-                    var s = new DocState();
                     if (int.TryParse(entryId, out var id))
                     {
                         try
                         {
                             var entry = _entryService.GetEntryById(id);
-                            if (entry?.Content != null)
+                            if (!string.IsNullOrEmpty(entry?.Content))
                             {
-                                s.Content     = entry.Content;
-                                s.BaseContent = entry.Content;
+                                state.Content     = entry.Content;
+                                state.BaseContent = entry.Content;
                             }
                         }
                         catch (Exception ex)
@@ -86,13 +90,20 @@ namespace NoteApp.Hubs
                             _logger.LogWarning(ex, "[Collab] Failed to load entry {EntryId} from DB", entryId);
                         }
                     }
-                    return s;
-                });
+                }
             }
             finally { docLock.Release(); }
 
-            await Clients.Caller.SendAsync("ReceiveDocState", state.Content, state.Version);
-            await BroadcastUsers(entryId);
+            // Kirim state ke client yang baru join.
+            // Kalau state kosong (DB juga kosong atau gagal load), JANGAN kirim ReceiveDocState
+            // supaya client tetap pakai content yang sudah ada di editor (dari AJAX load).
+            // Kalau ada content, kirim supaya client sync dengan state server (misal ada peer yang sudah edit).
+            if (!string.IsNullOrEmpty(state.Content))
+            {
+                await Clients.Caller.SendAsync("ReceiveDocState", state.Content, state.Version);
+            }
+            // Kalau kosong: client sudah punya content dari AJAX, biarkan saja.
+            // Nanti saat client pertama kali save/edit, content akan masuk ke DocState via SendHtmlUpdate.
         }
 
         // ─────────────────────────────────────────────────────────────
