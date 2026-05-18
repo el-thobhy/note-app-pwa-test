@@ -2,27 +2,20 @@
  * collaboration.js
  *
  * Client-side collaboration handler.
+ * Desain: server-authoritative merge. Client tidak merge.
  *
- * Desain: server-authoritative merge.
- * Client TIDAK merge — server yang merge saat conflict.
- * Client hanya:
- *   1. Kirim content + version ke server
- *   2. Terima ReceiveUpdate dari server → replace editor
- *
- * State yang dijaga:
- *   _serverVersion  = version terakhir yang dikonfirmasi server
- *   _pendingContent = ketikan terbaru yang belum dikirim (null = tidak ada)
- *   _inflight       = apakah ada request yang sedang menunggu response
+ * Fix race condition utama:
+ *   - Tidak pakai boolean flag _applyingRemote untuk guard editor events,
+ *     karena TinyMCE fire Change event secara async setelah setContent()
+ *     sehingga flag sudah di-reset sebelum event fire.
+ *   - Pakai _lastReceivedContent: content terakhir yang diterima dari server.
+ *     Di sendContentUpdate, skip kalau content == _lastReceivedContent.
+ *     Ini mencegah echo loop: ReceiveUpdate → setContent → Change → send → loop.
  *
  * In-flight guard:
  *   Hanya 1 request boleh in-flight ke server.
  *   Kalau user ketik saat ada in-flight, simpan ke _pendingContent.
- *   Setelah ReceiveUpdate diterima (ack), kirim _pendingContent kalau ada.
- *
- * Kenapa ini menghindari race condition:
- *   - Tidak ada 2 request dengan version yang sama
- *   - Server selalu terima request secara serial per entry (SemaphoreSlim)
- *   - Conflict resolution ada di server, bukan di client
+ *   Setelah ReceiveUpdate diterima, kirim _pendingContent kalau ada.
  */
 
 class CollaborationClient {
@@ -33,14 +26,16 @@ class CollaborationClient {
         this.connection  = null;
         this.editor      = null;
 
-        this._connected      = false;
-        this._applyingRemote = false;
+        this._connected     = false;
 
         // Version terakhir yang dikonfirmasi server
-        this._serverVersion  = 0;
+        this._serverVersion = 0;
+
+        // Content terakhir yang diterima dari server (untuk mencegah echo loop)
+        // sendContentUpdate akan skip kalau content == _lastReceivedContent
+        this._lastReceivedContent = null;
 
         // Ketikan terbaru yang belum dikirim
-        // null = tidak ada perubahan lokal yang pending
         this._pendingContent = null;
 
         // In-flight guard: true = ada request yang sedang menunggu response
@@ -64,8 +59,6 @@ class CollaborationClient {
             .build();
 
         this._registerHandlers();
-
-        // Bind editor events — deteksi perubahan dan kirim ke server
         this._bindEditorEvents();
 
         try {
@@ -97,9 +90,14 @@ class CollaborationClient {
 
     _bindEditorEvents() {
         this._editorHandler = () => {
-            if (!this._applyingRemote) {
-                this.sendContentUpdate(this.editor.getContent());
-            }
+            const content = this.editor.getContent();
+
+            // KUNCI: skip kalau content sama dengan yang terakhir diterima dari server.
+            // Ini mencegah echo loop saat ReceiveUpdate → setContent → Change event fire.
+            // Tidak pakai boolean flag karena TinyMCE fire Change async setelah setContent.
+            if (content === this._lastReceivedContent) return;
+
+            this.sendContentUpdate(content);
         };
         this.editor.on('Change KeyUp Paste Undo Redo', this._editorHandler);
     }
@@ -114,51 +112,30 @@ class CollaborationClient {
     _registerHandlers() {
 
         // ── ReceiveDocState ──────────────────────────────────────────
-        // Diterima saat join, hanya kalau server punya content (tidak kosong).
-        // Kalau server content kosong, server tidak akan kirim event ini,
-        // jadi handler ini hanya dipanggil kalau ada content yang valid.
-        //
-        // Kasus: user pertama join entry yang belum pernah diedit via collab
-        //   → server tidak kirim ReceiveDocState → editor tetap pakai content dari AJAX
-        //
-        // Kasus: user join entry yang sudah ada session aktif (ada peer)
-        //   → server kirim ReceiveDocState dengan content terbaru → sync ke editor
+        // Diterima saat join, hanya kalau server punya content.
+        // Server tidak kirim event ini kalau content kosong.
         this.connection.on('ReceiveDocState', (content, version) => {
             if (!this.editor || !content) return;
 
-            this._serverVersion = version ?? 0;
-            this._inflight      = false;
+            this._serverVersion       = version ?? 0;
+            this._inflight            = false;
+            this._lastReceivedContent = content;
 
-            // Hanya replace editor kalau server content berbeda dari yang sudah ada
-            // Ini mencegah overwrite content yang baru di-load dari DB via AJAX
             const currentContent = this.editor.getContent();
-            if (content === currentContent) {
-                // Sudah sama, tidak perlu update editor
-                return;
-            }
-
-            // Server punya content yang berbeda — ini artinya ada peer yang sudah edit
-            // Replace editor dengan state server yang lebih baru
-            this._applyingRemote = true;
-            try {
+            if (content !== currentContent) {
+                // Server punya content berbeda (ada peer yang sudah edit)
                 this.editor.setContent(content);
-            } finally {
-                this._applyingRemote = false;
             }
 
-            // Kalau ada pending yang terjadi sebelum join selesai, kirim sekarang
             if (this._pendingContent !== null) {
                 this._scheduleSend();
             }
         });
 
         // ── ReceiveUpdate ────────────────────────────────────────────
-        // Diterima setelah:
-        //   a) Server accept update kita (ack) — content = merged result
-        //   b) Peer kirim update — content = merged result dari server
-        //
-        // Dalam kedua kasus, REPLACE editor dengan content ini.
-        // Server sudah merge, kita tinggal display hasilnya.
+        // Diterima setelah server accept update (ack) atau peer kirim update.
+        // Server broadcast ke SEMUA termasuk pengirim.
+        // _lastReceivedContent di-set supaya echo loop tidak terjadi.
         this.connection.on('ReceiveUpdate', (serverContent, serverVersion) => {
             if (!this.editor || !serverContent) return;
 
@@ -166,24 +143,19 @@ class CollaborationClient {
             if (serverVersion !== undefined && serverVersion <= this._serverVersion) return;
 
             this._serverVersion = serverVersion ?? (this._serverVersion + 1);
+            this._inflight      = false;
 
-            // Clear in-flight — server sudah respond
-            this._inflight = false;
+            // Simpan sebagai last received — editor event handler akan skip content ini
+            this._lastReceivedContent = serverContent;
 
-            // Replace editor content dengan merged result dari server
-            this._applyingRemote = true;
-            try {
-                const current = this.editor.getContent();
-                if (current !== serverContent) {
-                    const bookmark = this.editor.selection.getBookmark(2, true);
-                    this.editor.setContent(serverContent);
-                    try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
-                }
-            } finally {
-                this._applyingRemote = false;
+            const current = this.editor.getContent();
+            if (current !== serverContent) {
+                const bookmark = this.editor.selection.getBookmark(2, true);
+                this.editor.setContent(serverContent);
+                try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
             }
 
-            // Kalau ada pending yang terjadi saat in-flight, kirim sekarang
+            // Kirim pending kalau ada (ketikan yang terjadi saat in-flight)
             if (this._pendingContent !== null) {
                 this._scheduleSend();
             }
@@ -210,19 +182,17 @@ class CollaborationClient {
     }
 
     // ── sendContentUpdate ────────────────────────────────────────────
-    // Dipanggil dari TinyMCE event saat konten berubah.
     sendContentUpdate(htmlContent) {
-        if (!this._connected || this._applyingRemote) return;
+        if (!this._connected) return;
+
+        // Skip kalau content sama dengan yang terakhir diterima dari server
+        // (mencegah echo loop setelah ReceiveUpdate → setContent)
+        if (htmlContent === this._lastReceivedContent) return;
 
         this._setTyping(true);
-
-        // Simpan ketikan terbaru sebagai pending
         this._pendingContent = htmlContent;
-
-        // Schedule debounced send
         this._scheduleSend();
 
-        // Max delay: force send setelah 2 detik walaupun user masih ngetik
         if (!this._maxDelayTimer) {
             this._maxDelayTimer = setTimeout(() => {
                 this._maxDelayTimer = null;
@@ -245,18 +215,21 @@ class CollaborationClient {
     _doSend() {
         if (!this._connected || this._pendingContent === null) return;
 
-        // IN-FLIGHT GUARD: hanya 1 request at a time
-        // Kalau ada yang in-flight, pending akan dikirim setelah ReceiveUpdate
+        // In-flight guard: hanya 1 request at a time
         if (this._inflight) return;
 
         const content = this._pendingContent;
         const version = this._serverVersion;
 
-        // Set in-flight SEBELUM invoke
+        // Skip kalau content tidak berubah dari yang terakhir diterima server
+        if (content === this._lastReceivedContent) {
+            this._pendingContent = null;
+            return;
+        }
+
         this._inflight       = true;
         this._pendingContent = null;
 
-        // Clear max delay timer
         if (this._maxDelayTimer) {
             clearTimeout(this._maxDelayTimer);
             this._maxDelayTimer = null;
@@ -265,12 +238,10 @@ class CollaborationClient {
         this.connection.invoke('SendHtmlUpdate', this.entryId, content, version)
             .catch(err => {
                 console.warn('[Collab] SendHtmlUpdate failed:', err);
-                // Kembalikan ke pending supaya bisa retry
                 this._inflight = false;
                 if (this._pendingContent === null) {
                     this._pendingContent = content;
                 }
-                // Retry setelah delay
                 setTimeout(() => this._scheduleSend(), 1000);
             });
     }
