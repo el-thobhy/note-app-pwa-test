@@ -65,6 +65,9 @@ class CollaborationClient {
 
         this._registerHandlers();
 
+        // Bind editor events — deteksi perubahan dan kirim ke server
+        this._bindEditorEvents();
+
         try {
             await this.connection.start();
             this._connected = true;
@@ -90,6 +93,22 @@ class CollaborationClient {
             this._connected = false;
             this._showStatus('disconnected');
         });
+    }
+
+    _bindEditorEvents() {
+        this._editorHandler = () => {
+            if (!this._applyingRemote) {
+                this.sendContentUpdate(this.editor.getContent());
+            }
+        };
+        this.editor.on('Change KeyUp Paste Undo Redo', this._editorHandler);
+    }
+
+    _unbindEditorEvents() {
+        if (this.editor && this._editorHandler) {
+            this.editor.off('Change KeyUp Paste Undo Redo', this._editorHandler);
+            this._editorHandler = null;
+        }
     }
 
     _registerHandlers() {
@@ -337,6 +356,7 @@ class CollaborationClient {
         clearTimeout(this._typingTimer);
         clearTimeout(this._maxDelayTimer);
         this._setTyping(false);
+        this._unbindEditorEvents();
         if (this.connection) {
             this.connection.stop();
             this.connection = null;

@@ -299,7 +299,6 @@
                             setup: function (editor){
                                 let activeNotification = null;
                                 let handleSave = null;
-                                let collabDebounce = null;
 
                                 handleSave = function () {
                                     const $btn = $("#submitBtn");
@@ -366,16 +365,6 @@
                                     if (activeNotification) {
                                         activeNotification.close();
                                         activeNotification = null;
-                                    }
-                                });
-
-                                // ── Collaboration: broadcast perubahan ke peers ──
-                                editor.on('Change KeyUp Paste Undo Redo', function () {
-                                    if (collabClient && !collabClient._applyingRemote) {
-                                        clearTimeout(collabDebounce);
-                                        collabDebounce = setTimeout(function () {
-                                            collabClient.sendContentUpdate(editor.getContent());
-                                        }, 300);
                                     }
                                 });
 
