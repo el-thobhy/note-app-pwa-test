@@ -1,32 +1,28 @@
 /**
  * collaboration.js
- * Real-time collaboration dengan server version guard + client-side 3-way merge.
  *
- * State yang dijaga client:
- *   _serverContent  = konten terakhir yang dikonfirmasi server (via UpdateAck atau ReceiveDocState)
- *   _serverVersion  = version dari _serverContent
- *   _pendingContent = konten lokal terbaru yang belum dikonfirmasi server (null = tidak ada pending)
+ * Client-side collaboration handler.
  *
- * Alur kirim:
- *   user ketik → simpan ke _pendingContent → schedule debounce (300ms)
- *   debounce fire ATAU max delay (2s) → merge(_serverContent, _pendingContent) → kirim ke server
- *   UpdateAck → cek apakah ada ketikan baru sejak kirim:
- *     - tidak ada → reset pending & mergeBase
- *     - ada → update mergeBase ke state terkonfirmasi, reschedule send
+ * Desain: server-authoritative merge.
+ * Client TIDAK merge — server yang merge saat conflict.
+ * Client hanya:
+ *   1. Kirim content + version ke server
+ *   2. Terima ReceiveUpdate dari server → replace editor
  *
- * Alur terima dari peer:
- *   ReceiveUpdate → simpan ke _serverContent + _serverVersion
- *                 → kalau tidak ada pending: apply ke editor
- *                 → kalau ada pending: apply merged ke editor, reschedule send
+ * State yang dijaga:
+ *   _serverVersion  = version terakhir yang dikonfirmasi server
+ *   _pendingContent = ketikan terbaru yang belum dikirim (null = tidak ada)
+ *   _inflight       = apakah ada request yang sedang menunggu response
  *
- * Reconnect:
- *   ReceiveDocState → kalau ada pending: merge pending ke atas state baru, pertahankan pending
- *                   → kalau tidak ada pending: apply langsung
+ * In-flight guard:
+ *   Hanya 1 request boleh in-flight ke server.
+ *   Kalau user ketik saat ada in-flight, simpan ke _pendingContent.
+ *   Setelah ReceiveUpdate diterima (ack), kirim _pendingContent kalau ada.
  *
- * Proteksi data loss:
- *   1. UpdateAck hanya reset pending kalau tidak ada ketikan baru (fix race condition)
- *   2. Max delay 2s — force send walaupun user masih ngetik (kurangi window of loss)
- *   3. Reconnect merge — pending tidak dibuang saat reconnect, di-merge ke state baru
+ * Kenapa ini menghindari race condition:
+ *   - Tidak ada 2 request dengan version yang sama
+ *   - Server selalu terima request secara serial per entry (SemaphoreSlim)
+ *   - Conflict resolution ada di server, bukan di client
  */
 
 class CollaborationClient {
@@ -40,41 +36,27 @@ class CollaborationClient {
         this._connected      = false;
         this._applyingRemote = false;
 
-        // State server — hanya update setelah konfirmasi dari server
-        this._serverContent  = '';
+        // Version terakhir yang dikonfirmasi server
         this._serverVersion  = 0;
 
-        // Konten lokal terbaru yang belum dikonfirmasi server
+        // Ketikan terbaru yang belum dikirim
         // null = tidak ada perubahan lokal yang pending
         this._pendingContent = null;
 
-        // Titik divergence: snapshot _serverContent saat user MULAI ketik
-        // Dipakai sebagai base di patch_make supaya diff akurat
-        // Reset ke null setelah UpdateAck (konfirmasi server)
-        this._mergeBase      = null;
+        // In-flight guard: true = ada request yang sedang menunggu response
+        this._inflight = false;
 
-        this._sendDebounce = null;
-        this._maxDelayTimer = null;   // Force send setelah max delay
-        this._maxDelay      = 2000;   // 2 detik max tanpa kirim
-        this._isTyping     = false;
-        this._typingTimer  = null;
+        this._sendDebounce  = null;
+        this._maxDelayTimer = null;
+        this._maxDelay      = 2000;
+        this._isTyping      = false;
+        this._typingTimer   = null;
 
-        this._dmp   = null;
         this._peers = new Map();
     }
 
     async init(editorInstance) {
         this.editor = editorInstance;
-
-        if (typeof diff_match_patch !== 'undefined') {
-            this._dmp = new diff_match_patch();
-            this._dmp.Patch_Timeout = 1;
-        } else {
-            console.warn('[Collab] diff-match-patch tidak tersedia, merge fallback ke server content');
-        }
-
-        // Init server content dari konten awal editor
-        this._serverContent = this.editor.getContent();
 
         this.connection = new signalR.HubConnectionBuilder()
             .withUrl('/hubs/collaboration')
@@ -94,149 +76,83 @@ class CollaborationClient {
         }
 
         this.connection.onreconnected(async () => {
-            this._connected    = true;
+            this._connected     = true;
+            this._inflight      = false;
             this._serverVersion = 0;
             await this.connection.invoke('JoinEntry', this.entryId, this.displayName, this.avatar);
             this._showStatus('connected');
         });
-        this.connection.onreconnecting(() => { this._connected = false; this._showStatus('reconnecting'); });
-        this.connection.onclose(()       => { this._connected = false; this._showStatus('disconnected'); });
+        this.connection.onreconnecting(() => {
+            this._connected = false;
+            this._showStatus('reconnecting');
+        });
+        this.connection.onclose(() => {
+            this._connected = false;
+            this._showStatus('disconnected');
+        });
     }
 
     _registerHandlers() {
-        // State awal saat join — apply langsung, set sebagai server content
-        // Kalau ada pending (reconnect case), merge dulu sebelum overwrite
+
+        // ── ReceiveDocState ──────────────────────────────────────────
+        // Diterima saat join. Apply langsung ke editor.
         this.connection.on('ReceiveDocState', (content, version) => {
-            if (!content || !this.editor) return;
+            if (!this.editor) return;
+
+            this._serverVersion = version ?? 0;
+            this._inflight      = false;
+
             this._applyingRemote = true;
             try {
-                if (this._pendingContent !== null && this._dmp) {
-                    // Reconnect dengan pending — merge perubahan lokal ke atas state server
-                    const base = this._mergeBase ?? this._serverContent;
-                    const merged = this._merge(content, this._pendingContent);
-                    this.editor.setContent(merged);
-                    this._serverContent  = content;
-                    this._serverVersion  = version ?? 0;
-                    // Pertahankan pending supaya dikirim ulang
-                    this._pendingContent = merged;
-                    this._mergeBase      = base;
-                    // Schedule send supaya pending terkirim ke server
-                    this._scheduleSend();
-                } else {
-                    this.editor.setContent(content);
-                    this._serverContent  = content;
-                    this._serverVersion  = version ?? 0;
-                    this._pendingContent = null;
-                    this._mergeBase      = null;
-                }
+                this.editor.setContent(content || '');
             } finally {
                 this._applyingRemote = false;
             }
+
+            // Kalau ada pending yang terjadi sebelum join selesai, kirim sekarang
+            if (this._pendingContent !== null) {
+                this._scheduleSend();
+            }
         });
 
-        // Update dari peer ATAU resync dari server
+        // ── ReceiveUpdate ────────────────────────────────────────────
+        // Diterima setelah:
+        //   a) Server accept update kita (ack) — content = merged result
+        //   b) Peer kirim update — content = merged result dari server
+        //
+        // Dalam kedua kasus, REPLACE editor dengan content ini.
+        // Server sudah merge, kita tinggal display hasilnya.
         this.connection.on('ReceiveUpdate', (serverContent, serverVersion) => {
-            if (!serverContent || !this.editor) return;
+            if (!this.editor || !serverContent) return;
 
-            // Ignore stale — sudah punya version ini atau lebih baru
+            // Ignore stale
             if (serverVersion !== undefined && serverVersion <= this._serverVersion) return;
 
-            // Simpan state server terbaru
-            this._serverContent = serverContent;
             this._serverVersion = serverVersion ?? (this._serverVersion + 1);
 
-            if (this._pendingContent !== null) {
-                // Ada perubahan lokal pending — tampilkan preview merge ke editor
-                // supaya user tidak melihat konten "loncat"
-                // Merge sebenarnya (yang dikirim ke server) dilakukan di _scheduleSend
-                const preview = this._merge(this._serverContent, this._pendingContent);
-                this._applyingRemote = true;
-                try {
-                    if (this.editor.getContent() !== preview) {
-                        const bookmark = this.editor.selection.getBookmark(2, true);
-                        this.editor.setContent(preview);
-                        try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
-                    }
-                } finally {
-                    this._applyingRemote = false;
-                }
-                // Reschedule send — saat fire akan merge ulang dengan _pendingContent terbaru
-                this._scheduleSend();
-            } else {
-                // Tidak ada pending — update murni dari peer, apply ke editor
-                this._applyingRemote = true;
-                try {
-                    if (this.editor.getContent() !== serverContent) {
-                        const bookmark = this.editor.selection.getBookmark(2, true);
-                        this.editor.setContent(serverContent);
-                        try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
-                    }
-                } finally {
-                    this._applyingRemote = false;
-                }
-            }
-        });
+            // Clear in-flight — server sudah respond
+            this._inflight = false;
 
-        // Server konfirmasi update kita diterima
-        this.connection.on('UpdateAck', (newVersion, acceptedContent) => {
-            if (acceptedContent) {
-                this._serverContent = acceptedContent;
-            } else if (this._lastSentContent !== undefined) {
-                this._serverContent = this._lastSentContent;
-            }
-            this._serverVersion = newVersion;
-
-            // Fix race condition: hanya reset pending kalau TIDAK ada ketikan baru
-            // sejak terakhir kirim. Kalau _pendingContent sudah berubah dari yang dikirim,
-            // berarti user ketik lagi antara send dan ack — jangan buang.
-            if (this._pendingContent === null ||
-                this._pendingContent === this._lastSentContent) {
-                this._pendingContent = null;
-                this._mergeBase      = null;
-            } else {
-                // Ada ketikan baru sejak terakhir kirim — update mergeBase ke state terkonfirmasi
-                // supaya merge berikutnya pakai base yang benar
-                this._mergeBase = this._serverContent;
-                // Reschedule send untuk pending yang masih ada
-                this._scheduleSend();
-            }
-        });
-
-        // Server reject update kita (version mismatch) — harus resync
-        this.connection.on('Resync', (serverContent, serverVersion) => {
-            if (!serverContent || !this.editor) return;
-
+            // Replace editor content dengan merged result dari server
             this._applyingRemote = true;
             try {
-                const oldBase = this._mergeBase ?? this._serverContent;
-                this._serverContent = serverContent;
-                this._serverVersion = serverVersion;
-
-                if (this._pendingContent !== null && this._dmp) {
-                    // Merge pending ke atas state server baru
-                    const merged = this._merge(serverContent, this._pendingContent);
-                    this._pendingContent = merged;
-                    this._mergeBase = serverContent;
-                    this.editor.setContent(merged);
-                    // Kirim ulang
-                    this._scheduleSend();
-                } else if (this._lastSentContent && this._lastSentContent !== serverContent) {
-                    // Inflight ditolak, jadikan pending dan merge ulang
-                    const merged = this._merge(serverContent, this._lastSentContent);
-                    this._pendingContent = merged;
-                    this._mergeBase = serverContent;
-                    this.editor.setContent(merged);
-                    this._scheduleSend();
-                } else {
-                    this._pendingContent = null;
-                    this._mergeBase = null;
+                const current = this.editor.getContent();
+                if (current !== serverContent) {
+                    const bookmark = this.editor.selection.getBookmark(2, true);
                     this.editor.setContent(serverContent);
+                    try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
                 }
             } finally {
                 this._applyingRemote = false;
             }
+
+            // Kalau ada pending yang terjadi saat in-flight, kirim sekarang
+            if (this._pendingContent !== null) {
+                this._scheduleSend();
+            }
         });
 
+        // ── ReceiveAwareness ─────────────────────────────────────────
         this.connection.on('ReceiveAwareness', (data) => {
             if (data.isTyping) {
                 this._showPeerTyping(data.connectionId, data.displayName, data.color);
@@ -245,6 +161,7 @@ class CollaborationClient {
             }
         });
 
+        // ── UsersOnline ──────────────────────────────────────────────
         this.connection.on('UsersOnline', (users) => {
             this._renderOnlineUsers(users);
             users.forEach(u => {
@@ -255,19 +172,12 @@ class CollaborationClient {
         });
     }
 
-    /**
-     * Dipanggil dari TinyMCE event saat konten berubah.
-     */
+    // ── sendContentUpdate ────────────────────────────────────────────
+    // Dipanggil dari TinyMCE event saat konten berubah.
     sendContentUpdate(htmlContent) {
         if (!this._connected || this._applyingRemote) return;
 
         this._setTyping(true);
-
-        // Snapshot _serverContent sebagai titik divergence saat user MULAI ketik.
-        // Hanya di-set sekali per "sesi ketik" — tidak di-reset selama pending masih ada.
-        if (this._pendingContent === null) {
-            this._mergeBase = this._serverContent;
-        }
 
         // Simpan ketikan terbaru sebagai pending
         this._pendingContent = htmlContent;
@@ -276,7 +186,6 @@ class CollaborationClient {
         this._scheduleSend();
 
         // Max delay: force send setelah 2 detik walaupun user masih ngetik
-        // Ini mengurangi window of loss dan memastikan peer dapat update periodik
         if (!this._maxDelayTimer) {
             this._maxDelayTimer = setTimeout(() => {
                 this._maxDelayTimer = null;
@@ -291,80 +200,42 @@ class CollaborationClient {
         this._typingTimer = setTimeout(() => this._setTyping(false), 1500);
     }
 
-    /**
-     * Schedule debounced send.
-     * Merge dilakukan DI SINI saat debounce fire — bukan saat ReceiveUpdate.
-     */
     _scheduleSend() {
         clearTimeout(this._sendDebounce);
         this._sendDebounce = setTimeout(() => this._doSend(), 300);
     }
 
-    /**
-     * Eksekusi merge + kirim ke server.
-     * Dipisah dari _scheduleSend supaya bisa dipanggil dari max delay timer juga.
-     */
     _doSend() {
         if (!this._connected || this._pendingContent === null) return;
 
-        // Merge tepat sebelum kirim — pakai state terbaru
-        const toSend = this._merge(this._serverContent, this._pendingContent);
+        // IN-FLIGHT GUARD: hanya 1 request at a time
+        // Kalau ada yang in-flight, pending akan dikirim setelah ReceiveUpdate
+        if (this._inflight) return;
 
-        // Simpan apa yang dikirim supaya UpdateAck bisa compare
-        this._lastSentContent = toSend;
+        const content = this._pendingContent;
+        const version = this._serverVersion;
 
-        // Clear max delay timer karena kita sudah kirim
+        // Set in-flight SEBELUM invoke
+        this._inflight       = true;
+        this._pendingContent = null;
+
+        // Clear max delay timer
         if (this._maxDelayTimer) {
             clearTimeout(this._maxDelayTimer);
             this._maxDelayTimer = null;
         }
 
-        const versionSnapshot = this._serverVersion;
-
-        this.connection.invoke(
-            'SendHtmlUpdate',
-            this.entryId,
-            toSend,
-            versionSnapshot
-        ).catch(err => console.warn('[Collab] SendHtmlUpdate failed:', err));
-    }
-
-    /**
-     * Merge server content dengan local pending menggunakan diff-match-patch.
-     *
-     * base   = _mergeBase  → snapshot _serverContent saat user mulai ketik
-     *                         (titik divergence yang benar, tidak bergeser)
-     * server = _serverContent terbaru (sudah include perubahan peer)
-     * local  = _pendingContent (perubahan lokal yang belum dikonfirmasi)
-     *
-     * patch_make(base → local) = "apa yang user ubah dari titik awal"
-     * patch_apply(patch, server) = "terapkan perubahan user ke atas konten server terbaru"
-     */
-    _merge(server, local) {
-        if (local === server) return local;
-        if (!this._dmp)       return local;
-
-        // Pakai _mergeBase sebagai titik divergence yang benar.
-        // Fallback ke _serverContent kalau _mergeBase belum di-set.
-        const base = this._mergeBase ?? this._serverContent;
-
-        try {
-            // Diff: apa yang user ubah dari titik divergence
-            const patches = this._dmp.patch_make(base, local);
-
-            // Apply perubahan user ke atas konten server terbaru
-            const [merged, results] = this._dmp.patch_apply(patches, server);
-
-            const failCount = results.filter(r => !r).length;
-            if (failCount > 0) {
-                console.debug(`[Collab] ${failCount}/${results.length} patches failed, server wins for conflicts`);
-            }
-
-            return merged;
-        } catch (e) {
-            console.warn('[Collab] Merge error, using local:', e);
-            return local;
-        }
+        this.connection.invoke('SendHtmlUpdate', this.entryId, content, version)
+            .catch(err => {
+                console.warn('[Collab] SendHtmlUpdate failed:', err);
+                // Kembalikan ke pending supaya bisa retry
+                this._inflight = false;
+                if (this._pendingContent === null) {
+                    this._pendingContent = content;
+                }
+                // Retry setelah delay
+                setTimeout(() => this._scheduleSend(), 1000);
+            });
     }
 
     _setTyping(isTyping) {
@@ -378,7 +249,7 @@ class CollaborationClient {
         }
     }
 
-    // ── Typing indicator UI ──────────────────────────────────────
+    // ── Typing indicator UI ──────────────────────────────────────────
 
     _showPeerTyping(connectionId, displayName, color) {
         const container = document.getElementById('collab-typing-indicators');
@@ -415,7 +286,7 @@ class CollaborationClient {
         if (el) el.remove();
     }
 
-    // ── Online users UI ──────────────────────────────────────────
+    // ── Online users UI ──────────────────────────────────────────────
 
     _renderOnlineUsers(users) {
         const container = document.getElementById('collab-users');
