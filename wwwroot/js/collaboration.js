@@ -135,7 +135,11 @@ class CollaborationClient {
         // ── ReceiveUpdate ────────────────────────────────────────────
         // Diterima setelah server accept update (ack) atau peer kirim update.
         // Server broadcast ke SEMUA termasuk pengirim.
-        // _lastReceivedContent di-set supaya echo loop tidak terjadi.
+        //
+        // PENTING: kalau ada _pendingContent (user masih mengetik),
+        // JANGAN replace editor — user akan kehilangan ketikannya.
+        // Cukup update _serverVersion supaya _doSend berikutnya pakai version yang benar.
+        // Editor akan di-update setelah pending terkirim dan ack diterima.
         this.connection.on('ReceiveUpdate', (serverContent, serverVersion) => {
             if (!this.editor || !serverContent) return;
 
@@ -145,19 +149,22 @@ class CollaborationClient {
             this._serverVersion = serverVersion ?? (this._serverVersion + 1);
             this._inflight      = false;
 
-            // Simpan sebagai last received — editor event handler akan skip content ini
+            // Simpan sebagai last received
             this._lastReceivedContent = serverContent;
 
-            const current = this.editor.getContent();
-            if (current !== serverContent) {
-                const bookmark = this.editor.selection.getBookmark(2, true);
-                this.editor.setContent(serverContent);
-                try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
-            }
-
-            // Kirim pending kalau ada (ketikan yang terjadi saat in-flight)
             if (this._pendingContent !== null) {
+                // User masih mengetik — JANGAN replace editor.
+                // Pending akan dikirim segera setelah ini dengan version terbaru.
+                // Server akan merge pending di atas serverContent.
                 this._scheduleSend();
+            } else {
+                // Tidak ada pending — replace editor dengan state server
+                const current = this.editor.getContent();
+                if (current !== serverContent) {
+                    const bookmark = this.editor.selection.getBookmark(2, true);
+                    this.editor.setContent(serverContent);
+                    try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
+                }
             }
         });
 

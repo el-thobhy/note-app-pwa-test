@@ -5,35 +5,34 @@ using NoteApp.Services;
 namespace NoteApp.Hubs
 {
     /// <summary>
-    /// SignalR hub untuk real-time collaboration per entry.
+    /// Real-time collaboration hub — server-authoritative merge.
     ///
-    /// Strategi: server-authoritative merge dengan strict version guard.
+    /// Kunci desain:
+    ///   - BaseContent disimpan PER CLIENT (per connectionId), bukan shared.
+    ///     Setiap client punya snapshot dari state saat mereka terakhir sync.
+    ///     Ini adalah "titik divergence" yang akurat untuk 3-way merge.
     ///
-    /// Alur normal (no conflict):
-    ///   Client kirim (entryId, htmlContent, clientVersion)
-    ///   clientVersion == serverVersion → accept, simpan, broadcast, ack
+    ///   - Alur SendHtmlUpdate:
+    ///     1. Client kirim (content, clientVersion)
+    ///     2. Server ambil BaseContent milik client ini (snapshot terakhir yang client tahu)
+    ///     3. Kalau clientVersion == serverVersion → no conflict, accept as-is
+    ///     4. Kalau clientVersion &lt; serverVersion → conflict:
+    ///        merge(clientBase, clientContent, serverContent)
+    ///        = "apply perubahan client di atas state server terbaru"
+    ///     5. Update BaseContent client = merged result (untuk merge berikutnya)
+    ///     6. Broadcast ke semua
     ///
-    /// Alur conflict (2 client kirim bersamaan):
-    ///   Client A kirim ver=1 → masuk lock → accept → ver=2 → release → broadcast
-    ///   Client B kirim ver=1 → masuk lock → clientVer(1) != serverVer(2) → conflict
-    ///   Server merge: diff(base_at_ver1, B_content) applied on top of ver2_content
-    ///   Hasil merge disimpan sebagai ver=3, broadcast ke semua
-    ///
-    /// Kenapa server merge lebih baik dari client merge:
-    ///   - Server punya base snapshot yang akurat (state sebelum update terakhir)
-    ///   - Merge terjadi 1x di server, hasilnya konsisten untuk semua client
-    ///   - Client tidak perlu tahu tentang conflict — cukup terima ReceiveUpdate
-    ///
-    /// Lock guarantee:
-    ///   - SemaphoreSlim per entryId → serialize semua writes untuk entry yang sama
-    ///   - Lock direlease SEBELUM broadcast → tidak hold lock saat network I/O
+    ///   - Lock per entry → serialize semua writes, tidak ada concurrent write
+    ///   - Lock release sebelum broadcast → tidak hold lock saat network I/O
     /// </summary>
     public class CollaborationHub : Hub
     {
-        private static readonly ConcurrentDictionary<string, DocState>      _docStates = new();
-        private static readonly ConcurrentDictionary<string, CollabUser>    _users     = new();
-        private static readonly ConcurrentDictionary<string, string>        _connEntry = new();
-        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _locks     = new();
+        private static readonly ConcurrentDictionary<string, DocState>      _docStates   = new();
+        private static readonly ConcurrentDictionary<string, CollabUser>    _users       = new();
+        private static readonly ConcurrentDictionary<string, string>        _connEntry   = new();
+        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _locks       = new();
+        // BaseContent per client: key = connectionId, value = last known content
+        private static readonly ConcurrentDictionary<string, string>        _clientBases = new();
 
         private readonly ILogger<CollaborationHub> _logger;
         private readonly IDailyEntryService _entryService;
@@ -43,10 +42,6 @@ namespace NoteApp.Hubs
             _logger       = logger;
             _entryService = entryService;
         }
-
-        // ─────────────────────────────────────────────────────────────
-        // JOIN
-        // ─────────────────────────────────────────────────────────────
 
         public async Task JoinEntry(string entryId, string displayName, string avatar)
         {
@@ -71,7 +66,6 @@ namespace NoteApp.Hubs
                 isNewState = !_docStates.ContainsKey(entryId);
                 state = _docStates.GetOrAdd(entryId, _ => new DocState());
 
-                // Kalau state baru (belum ada di memory), load dari DB
                 if (isNewState && string.IsNullOrEmpty(state.Content))
                 {
                     if (int.TryParse(entryId, out var id))
@@ -80,10 +74,7 @@ namespace NoteApp.Hubs
                         {
                             var entry = _entryService.GetEntryById(id);
                             if (!string.IsNullOrEmpty(entry?.Content))
-                            {
-                                state.Content     = entry.Content;
-                                state.BaseContent = entry.Content;
-                            }
+                                state.Content = entry.Content;
                         }
                         catch (Exception ex)
                         {
@@ -91,42 +82,37 @@ namespace NoteApp.Hubs
                         }
                     }
                 }
+
+                // Set base untuk client ini = current server content
+                // Ini adalah "titik divergence" awal client
+                _clientBases[Context.ConnectionId] = state.Content;
             }
             finally { docLock.Release(); }
 
-            // Kirim state ke client yang baru join.
-            // Kalau state kosong (DB juga kosong atau gagal load), JANGAN kirim ReceiveDocState
-            // supaya client tetap pakai content yang sudah ada di editor (dari AJAX load).
-            // Kalau ada content, kirim supaya client sync dengan state server (misal ada peer yang sudah edit).
+            // Kirim state ke client hanya kalau ada content
             if (!string.IsNullOrEmpty(state.Content))
-            {
                 await Clients.Caller.SendAsync("ReceiveDocState", state.Content, state.Version);
-            }
-            // Kalau kosong: client sudah punya content dari AJAX, biarkan saja.
-            // Nanti saat client pertama kali save/edit, content akan masuk ke DocState via SendHtmlUpdate.
+
+            await BroadcastUsers(entryId);
         }
 
-        // ─────────────────────────────────────────────────────────────
-        // SEND UPDATE
-        // ─────────────────────────────────────────────────────────────
-
         /// <summary>
-        /// Client kirim update konten.
+        /// Client kirim update.
         ///
-        /// clientVersion = version yang client pakai sebagai base saat mengedit.
+        /// clientVersion = version terakhir yang client tahu dari server.
         ///
-        /// Kasus 1 — No conflict (clientVersion == serverVersion):
-        ///   Client up-to-date, accept content as-is.
+        /// No conflict (clientVersion >= serverVersion):
+        ///   Client up-to-date, accept as-is.
+        ///   Update clientBase = content yang dikirim.
         ///
-        /// Kasus 2 — Conflict (clientVersion &lt; serverVersion):
-        ///   Ada peer yang sudah update server setelah client mulai edit.
-        ///   Server merge: ambil perubahan client (diff base→client),
-        ///   apply ke server content terbaru.
-        ///   Hasilnya broadcast ke semua termasuk pengirim.
+        /// Conflict (clientVersion &lt; serverVersion):
+        ///   Client belum tahu update terbaru dari peer.
+        ///   3-way merge: diff(clientBase, clientContent) applied on top of serverContent.
+        ///   clientBase = snapshot server yang client terakhir tahu (per-client, akurat).
+        ///   Update clientBase = merged result.
         ///
-        /// Kasus 3 — Stale (clientVersion > serverVersion):
-        ///   Tidak mungkin terjadi dalam kondisi normal.
-        ///   Treat sama seperti no conflict.
+        /// Broadcast ke SEMUA termasuk pengirim.
+        /// Update clientBase semua peer = merged result (mereka sekarang tahu state ini).
         /// </summary>
         public async Task SendHtmlUpdate(string entryId, string htmlContent, long clientVersion)
         {
@@ -137,69 +123,68 @@ namespace NoteApp.Hubs
 
             long   newVersion;
             string resultContent;
+            List<string> allConnectionIds;
 
             try
             {
                 var state = _docStates.GetOrAdd(entryId, _ => new DocState());
 
+                // Ambil base milik client ini (snapshot terakhir yang dia tahu)
+                var clientBase = _clientBases.GetValueOrDefault(Context.ConnectionId, state.Content);
+
                 if (clientVersion >= state.Version)
                 {
-                    // Kasus 1: No conflict — accept as-is
-                    newVersion     = state.Version + 1;
-                    resultContent  = htmlContent;
-
-                    state.BaseContent = state.Content; // simpan sebelum overwrite
-                    state.Content     = resultContent;
-                    state.Version     = newVersion;
+                    // No conflict
+                    resultContent = htmlContent;
+                    newVersion    = state.Version + 1;
                 }
                 else
                 {
-                    // Kasus 2: Conflict — server merge
+                    // Conflict — 3-way merge pakai clientBase yang akurat
                     _logger.LogDebug(
                         "[Collab] Conflict entry={EntryId} clientVer={ClientVer} serverVer={ServerVer}",
                         entryId, clientVersion, state.Version);
 
-                    resultContent = ServerMerge(state.BaseContent, htmlContent, state.Content);
+                    resultContent = ServerMerge(clientBase, htmlContent, state.Content);
                     newVersion    = state.Version + 1;
-
-                    state.BaseContent = state.Content;
-                    state.Content     = resultContent;
-                    state.Version     = newVersion;
                 }
+
+                state.Content = resultContent;
+                state.Version = newVersion;
+
+                // Update base semua client yang ada di room ini = merged result
+                // Mereka sekarang tahu state ini setelah menerima broadcast
+                allConnectionIds = _users.Values
+                    .Where(u => u.EntryId == entryId)
+                    .Select(u => u.ConnectionId)
+                    .ToList();
+
+                foreach (var connId in allConnectionIds)
+                    _clientBases[connId] = resultContent;
             }
             finally
             {
-                // Release SEBELUM broadcast — jangan hold lock saat network I/O
                 docLock.Release();
             }
 
-            // Broadcast merged result ke SEMUA (termasuk pengirim)
-            // Pengirim juga perlu update supaya editor-nya sync dengan merged result
             await Clients.Group(GroupName(entryId))
                 .SendAsync("ReceiveUpdate", resultContent, newVersion);
         }
 
-        // ─────────────────────────────────────────────────────────────
-        // SERVER MERGE
-        // ─────────────────────────────────────────────────────────────
-
         /// <summary>
-        /// 3-way merge menggunakan diff-match-patch.
+        /// 3-way merge.
+        /// base  = snapshot server yang client terakhir tahu (per-client, akurat)
+        /// mine  = content yang client kirim
+        /// theirs = current server content
         ///
-        /// base   = state server sebelum update terakhir (BaseContent)
-        /// mine   = content yang client kirim
-        /// theirs = current server content (sudah include update dari peer)
-        ///
-        /// Logika:
-        ///   1. diff(base, mine) → "apa yang client ubah"
-        ///   2. apply diff ke theirs → "perubahan client di atas state peer"
-        ///   3. Kalau ada conflict di patch, server content wins untuk bagian itu
+        /// diff(base, mine) = perubahan yang client buat
+        /// apply ke theirs  = perubahan client di atas state server terbaru
         /// </summary>
         private string ServerMerge(string baseContent, string mine, string theirs)
         {
-            if (mine == theirs)    return mine;
-            if (mine == baseContent)   return theirs; // client tidak ubah apa-apa
-            if (theirs == baseContent) return mine;   // server tidak berubah (race tapi no-op)
+            if (mine == theirs)        return mine;
+            if (mine == baseContent)   return theirs;
+            if (theirs == baseContent) return mine;
             if (string.IsNullOrEmpty(baseContent)) return theirs;
 
             try
@@ -208,22 +193,17 @@ namespace NoteApp.Hubs
                 dmp.Match_Threshold = 0.5f;
                 dmp.Match_Distance  = 2000;
 
-                // Hitung apa yang client ubah dari base
                 var diffs   = dmp.diff_main(baseContent, mine);
                 dmp.diff_cleanupSemantic(diffs);
                 var patches = dmp.patch_make(baseContent, diffs);
-
-                // Apply perubahan client ke atas server content terbaru
                 var result  = dmp.patch_apply(patches, theirs);
                 var merged  = (string)result[0];
                 var success = (bool[])result[1];
 
                 var failCount = 0;
                 foreach (var s in success) if (!s) failCount++;
-
                 if (failCount > 0)
-                    _logger.LogDebug("[Collab] Merge: {Fail}/{Total} patches failed (server wins for conflicts)",
-                        failCount, success.Length);
+                    _logger.LogDebug("[Collab] Merge: {Fail}/{Total} patches failed", failCount, success.Length);
 
                 return merged;
             }
@@ -233,10 +213,6 @@ namespace NoteApp.Hubs
                 return theirs;
             }
         }
-
-        // ─────────────────────────────────────────────────────────────
-        // AWARENESS
-        // ─────────────────────────────────────────────────────────────
 
         public async Task SendAwareness(string entryId, AwarenessData awarenessData)
         {
@@ -250,24 +226,17 @@ namespace NoteApp.Hubs
             });
         }
 
-        // ─────────────────────────────────────────────────────────────
-        // DISCONNECT
-        // ─────────────────────────────────────────────────────────────
-
         public override async Task OnDisconnectedAsync(Exception? exception)
         {
             if (_connEntry.TryRemove(Context.ConnectionId, out var entryId))
             {
                 _users.TryRemove(Context.ConnectionId, out _);
+                _clientBases.TryRemove(Context.ConnectionId, out _);
                 await Groups.RemoveFromGroupAsync(Context.ConnectionId, GroupName(entryId));
                 await BroadcastUsers(entryId);
             }
             await base.OnDisconnectedAsync(exception);
         }
-
-        // ─────────────────────────────────────────────────────────────
-        // HELPERS
-        // ─────────────────────────────────────────────────────────────
 
         private async Task BroadcastUsers(string entryId)
         {
@@ -290,15 +259,10 @@ namespace NoteApp.Hubs
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // MODELS
-    // ─────────────────────────────────────────────────────────────────
-
     public class DocState
     {
-        public string Content     { get; set; } = "";
-        public string BaseContent { get; set; } = ""; // snapshot sebelum update terakhir (untuk merge)
-        public long   Version     { get; set; } = 0;
+        public string Content { get; set; } = "";
+        public long   Version { get; set; } = 0;
     }
 
     public class CollabUser
