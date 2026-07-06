@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.SignalR;
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
+using HtmlAgilityPack;
 using NoteApp.Services;
 
 namespace NoteApp.Hubs
@@ -187,6 +189,128 @@ namespace NoteApp.Hubs
             if (theirs == baseContent) return mine;
             if (string.IsNullOrEmpty(baseContent)) return theirs;
 
+            if (HasTable(baseContent) || HasTable(mine) || HasTable(theirs))
+            {
+                try
+                {
+                    var docBase = new HtmlDocument(); docBase.LoadHtml(baseContent);
+                    var docMine = new HtmlDocument(); docMine.LoadHtml(mine);
+                    var docTheirs = new HtmlDocument(); docTheirs.LoadHtml(theirs);
+
+                    var baseTables = docBase.DocumentNode.SelectNodes("//table");
+                    var mineTables = docMine.DocumentNode.SelectNodes("//table");
+                    var theirsTables = docTheirs.DocumentNode.SelectNodes("//table");
+
+                    int baseCount = baseTables?.Count ?? 0;
+                    int mineCount = mineTables?.Count ?? 0;
+                    int theirsCount = theirsTables?.Count ?? 0;
+
+                    if (baseCount > 0 && baseCount == mineCount && baseCount == theirsCount)
+                    {
+                        var mergedTables = new List<string>();
+                        for (int i = 0; i < baseCount; i++)
+                        {
+                            mergedTables.Add(MergeSingleTable(baseTables[i], mineTables[i], theirsTables[i]));
+                        }
+
+                        // Mask tables in HTML texts
+                        int bIdx = 0, mIdx = 0, tIdx = 0;
+                        var tableRegex = new Regex("<table[\\s\\S]*?<\\/table>", RegexOptions.IgnoreCase);
+
+                        var bMasked = tableRegex.Replace(baseContent, _ => $"__TABLE_MERGE_{bIdx++}__");
+                        var mMasked = tableRegex.Replace(mine, _ => $"__TABLE_MERGE_{mIdx++}__");
+                        var tMasked = tableRegex.Replace(theirs, _ => $"__TABLE_MERGE_{tIdx++}__");
+
+                        var mergedText = StandardMerge(bMasked, mMasked, tMasked);
+
+                        // Restore tables
+                        for (int i = 0; i < mergedTables.Count; i++)
+                        {
+                            mergedText = mergedText.Replace($"__TABLE_MERGE_{i}__", mergedTables[i]);
+                        }
+
+                        // Clean up any remaining placeholders
+                        mergedText = Regex.Replace(mergedText, "__TABLE_MERGE_\\d+__", "");
+                        return mergedText;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Collab] Table-aware ServerMerge failed, falling back to StandardMerge");
+                }
+            }
+
+            return StandardMerge(baseContent, mine, theirs);
+        }
+
+        private string MergeSingleTable(HtmlNode baseTable, HtmlNode mineTable, HtmlNode theirsTable)
+        {
+            var baseRows = baseTable.SelectNodes(".//tr") ?? new HtmlNodeCollection(null);
+            var mineRows = mineTable.SelectNodes(".//tr") ?? new HtmlNodeCollection(null);
+            var theirsRows = theirsTable.SelectNodes(".//tr") ?? new HtmlNodeCollection(null);
+
+            int maxRows = Math.Max(baseRows.Count, Math.Max(mineRows.Count, theirsRows.Count));
+            
+            var mergedTable = baseTable.CloneNode(false);
+            var tbody = mergedTable.OwnerDocument.CreateElement("tbody");
+            mergedTable.AppendChild(tbody);
+
+            for (int r = 0; r < maxRows; r++)
+            {
+                var baseRow = r < baseRows.Count ? baseRows[r] : null;
+                var mineRow = r < mineRows.Count ? mineRows[r] : null;
+                var theirsRow = r < theirsRows.Count ? theirsRows[r] : null;
+
+                if (baseRow == null)
+                {
+                    var fallbackRow = mineRow ?? theirsRow;
+                    if (fallbackRow != null) tbody.AppendChild(fallbackRow.CloneNode(true));
+                    continue;
+                }
+
+                var mergedRow = baseRow.CloneNode(false);
+                tbody.AppendChild(mergedRow);
+
+                var baseCells = baseRow.SelectNodes(".//td|.//th") ?? new HtmlNodeCollection(null);
+                var mineCells = mineRow?.SelectNodes(".//td|.//th") ?? new HtmlNodeCollection(null);
+                var theirsCells = theirsRow?.SelectNodes(".//td|.//th") ?? new HtmlNodeCollection(null);
+
+                int maxCells = Math.Max(baseCells.Count, Math.Max(mineCells.Count, theirsCells.Count));
+
+                for (int c = 0; c < maxCells; c++)
+                {
+                    var baseCell = c < baseCells.Count ? baseCells[c] : null;
+                    var mineCell = c < mineCells.Count ? mineCells[c] : null;
+                    var theirsCell = c < theirsCells.Count ? theirsCells[c] : null;
+
+                    if (baseCell == null)
+                    {
+                        var fallbackCell = mineCell ?? theirsCell;
+                        if (fallbackCell != null) mergedRow.AppendChild(fallbackCell.CloneNode(true));
+                        continue;
+                    }
+
+                    var mergedCell = baseCell.CloneNode(false);
+                    mergedRow.AppendChild(mergedCell);
+
+                    string baseHtml = baseCell.InnerHtml;
+                    string mineHtml = mineCell != null ? mineCell.InnerHtml : "";
+                    string theirsHtml = theirsCell != null ? theirsCell.InnerHtml : "";
+
+                    mergedCell.InnerHtml = StandardMerge(baseHtml, mineHtml, theirsHtml);
+                }
+            }
+
+            return mergedTable.OuterHtml;
+        }
+
+        private string StandardMerge(string baseContent, string mine, string theirs)
+        {
+            if (mine == theirs)        return mine;
+            if (mine == baseContent)   return theirs;
+            if (theirs == baseContent) return mine;
+            if (string.IsNullOrEmpty(baseContent)) return theirs;
+
             try
             {
                 var dmp = new DiffMatchPatch.diff_match_patch();
@@ -197,21 +321,19 @@ namespace NoteApp.Hubs
                 dmp.diff_cleanupSemantic(diffs);
                 var patches = dmp.patch_make(baseContent, diffs);
                 var result  = dmp.patch_apply(patches, theirs);
-                var merged  = (string)result[0];
-                var success = (bool[])result[1];
-
-                var failCount = 0;
-                foreach (var s in success) if (!s) failCount++;
-                if (failCount > 0)
-                    _logger.LogDebug("[Collab] Merge: {Fail}/{Total} patches failed", failCount, success.Length);
-
-                return merged;
+                return (string)result[0];
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "[Collab] Merge exception, using server content");
+                _logger.LogWarning(ex, "[Collab] StandardMerge exception");
                 return theirs;
             }
+        }
+
+        private bool HasTable(string html)
+        {
+            if (string.IsNullOrEmpty(html)) return false;
+            return html.Contains("<table", StringComparison.OrdinalIgnoreCase);
         }
 
         public async Task SendAwareness(string entryId, AwarenessData awarenessData)

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * collab-editor_2.js
  * Real-time collaboration: server LWW version guard + client-side 3-way merge.
  *
@@ -27,29 +27,29 @@
 
 class CollaborationClient {
     constructor(entryId, displayName, avatar) {
-        this.entryId     = String(entryId);
+        this.entryId = String(entryId);
         this.displayName = displayName;
-        this.avatar      = avatar;
-        this.connection  = null;
-        this.editor      = null;
+        this.avatar = avatar;
+        this.connection = null;
+        this.editor = null;
 
-        this._connected      = false;
-        this._initialized    = false; // true setelah ReceiveDocState diterima
+        this._connected = false;
+        this._initialized = false; // true setelah ReceiveDocState diterima
         this._applyingRemote = false;
 
-        this._baseContent    = '';   // content terakhir yang dikonfirmasi server (normalized)
-        this._serverVersion  = 0;
+        this._baseContent = '';   // content terakhir yang dikonfirmasi server (normalized)
+        this._serverVersion = 0;
         this._pendingContent = null; // content lokal terbaru yang belum dikonfirmasi
 
         // Race condition guard: jangan kirim op baru saat masih menunggu AckOp
-        this._inflight       = false;
+        this._inflight = false;
 
-        this._sendDebounce   = null;
-        this._maxDelayTimer  = null;
-        this._isTyping       = false;
-        this._typingTimer    = null;
+        this._sendDebounce = null;
+        this._maxDelayTimer = null;
+        this._isTyping = false;
+        this._typingTimer = null;
 
-        this._dmp   = null;
+        this._dmp = null;
         this._peers = new Map();
     }
 
@@ -59,10 +59,17 @@ class CollaborationClient {
         if (typeof diff_match_patch !== 'undefined') {
             this._dmp = new diff_match_patch();
             this._dmp.Match_Threshold = 0.5;
-            this._dmp.Match_Distance  = 5000;
-            this._dmp.Patch_Timeout   = 1;
+            this._dmp.Match_Distance = 5000;
+            this._dmp.Patch_Timeout = 1;
         } else {
-            console.warn('[Collab] diff-match-patch tidak tersedia, merge akan fallback ke server content');
+            console.warn('[Collab] diff-match-patch tidak tersedia');
+        }
+
+        if (typeof OTEngine !== 'undefined') {
+            this._otEngine = new OTEngine();
+            console.log('[Collab] OTEngine initialized for 3-way merge');
+        } else {
+            console.warn('[Collab] OTEngine tidak tersedia');
         }
 
         this.connection = new signalR.HubConnectionBuilder()
@@ -83,9 +90,9 @@ class CollaborationClient {
         }
 
         this.connection.onreconnected(async () => {
-            this._connected     = true;
-            this._initialized   = false;
-            this._inflight      = false;
+            this._connected = true;
+            this._initialized = false;
+            this._inflight = false;
             this._pendingContent = null;
             this._serverVersion = 0;
             clearTimeout(this._sendDebounce);
@@ -116,12 +123,12 @@ class CollaborationClient {
             try {
                 this.editor.setContent(content ?? '');
                 // Baca kembali setelah normalisasi TinyMCE
-                const normalized     = this.editor.getContent();
-                this._baseContent    = normalized;
-                this._serverVersion  = version ?? 0;
+                const normalized = this.editor.getContent();
+                this._baseContent = normalized;
+                this._serverVersion = version ?? 0;
                 this._pendingContent = null;
-                this._inflight       = false;
-                this._initialized    = true;
+                this._inflight = false;
+                this._initialized = true;
             } finally {
                 this._applyingRemote = false;
             }
@@ -138,8 +145,8 @@ class CollaborationClient {
             if (!this.editor) return;
             if (serverVersion !== undefined && serverVersion <= this._serverVersion) return;
 
-            const prevBase    = this._baseContent;
-            const pending     = this._pendingContent;
+            const prevBase = this._baseContent;
+            const pending = this._pendingContent;
 
             this._serverVersion = serverVersion ?? (this._serverVersion + 1);
 
@@ -151,9 +158,16 @@ class CollaborationClient {
                 this._applyingRemote = true;
                 try {
                     const bookmark = this._getBookmark();
+                    
+                    // Dapatkan versi normalisasi dari serverContent untuk _baseContent
+                    this.editor.setContent(serverContent);
+                    const normalizedServer = this.editor.getContent();
+                    
+                    // Set kembali ke merged content untuk editor dan _pendingContent
                     this.editor.setContent(merged);
                     const normalizedMerged = this.editor.getContent();
-                    this._baseContent    = normalizedMerged;
+                    
+                    this._baseContent    = normalizedServer;
                     this._pendingContent = normalizedMerged;
                     this._restoreBookmark(bookmark);
                 } finally {
@@ -173,7 +187,7 @@ class CollaborationClient {
                     if (localContent !== serverContent) {
                         const bookmark = this._getBookmark();
                         this.editor.setContent(serverContent);
-                        const normalized  = this.editor.getContent();
+                        const normalized = this.editor.getContent();
                         this._baseContent = normalized;
                         this._restoreBookmark(bookmark);
                     } else {
@@ -191,8 +205,8 @@ class CollaborationClient {
          * Kalau ada pending baru yang terkumpul saat in-flight, kirim sekarang.
          */
         this.connection.on('UpdateAck', (newVersion) => {
-            this._serverVersion  = newVersion;
-            this._inflight       = false;
+            this._serverVersion = newVersion;
+            this._inflight = false;
 
             // Kalau ada perubahan lokal yang terkumpul saat in-flight, kirim sekarang
             if (this._pendingContent !== null && this._pendingContent !== this._baseContent) {
@@ -245,7 +259,7 @@ class CollaborationClient {
             this.connection = null;
         }
         this._initialized = false;
-        this._inflight    = false;
+        this._inflight = false;
     }
 
     // ── Send logic ───────────────────────────────────────────────────────────
@@ -304,15 +318,15 @@ class CollaborationClient {
         }
 
         const versionSnapshot = this._serverVersion;
-        this._inflight        = true;
+        this._inflight = true;
         // Update base ke content yang kita kirim — ini jadi titik divergence baru
-        this._baseContent     = content;
+        this._baseContent = content;
 
         this.connection.invoke('SendHtmlUpdate', this.entryId, content, versionSnapshot)
             .catch(err => {
                 console.warn('[Collab] SendHtmlUpdate failed:', err);
                 // Rollback: biarkan pending tetap ada, reset inflight supaya bisa retry
-                this._inflight    = false;
+                this._inflight = false;
                 this._baseContent = this._baseContent; // tidak berubah, sudah di-set
                 // Retry setelah delay
                 setTimeout(() => this._flushPending(), 1000);
@@ -333,16 +347,25 @@ class CollaborationClient {
      * Conflict resolution: server wins untuk bagian yang conflict.
      */
     _threeWayMerge(base, server, local) {
-        if (local  === base)   return server; // tidak ada perubahan lokal
-        if (server === base)   return local;  // tidak ada perubahan server
-        if (local  === server) return local;  // sudah sama
+        if (local === base) return server; // tidak ada perubahan lokal
+        if (server === base) return local;  // tidak ada perubahan server
+        if (local === server) return local;  // sudah sama
+
+        if (this._otEngine) {
+            try {
+                console.log('[Collab] Using OTEngine for three-way merge');
+                return this._otEngine.smartThreeWayMerge(base, local, server);
+            } catch (e) {
+                console.warn('[Collab] OTEngine merge failed, falling back to diff-match-patch:', e);
+            }
+        }
 
         if (!this._dmp) return server; // fallback tanpa dmp
 
         try {
-            const localPatches        = this._dmp.patch_make(base, local);
-            const [merged, results]   = this._dmp.patch_apply(localPatches, server);
-            const failCount           = results.filter(r => !r).length;
+            const localPatches = this._dmp.patch_make(base, local);
+            const [merged, results] = this._dmp.patch_apply(localPatches, server);
+            const failCount = results.filter(r => !r).length;
             if (failCount > 0) {
                 console.debug(`[Collab] Merge: ${failCount}/${results.length} patches failed, server wins for those parts`);
             }
@@ -361,7 +384,7 @@ class CollaborationClient {
 
     _restoreBookmark(bookmark) {
         if (!bookmark) return;
-        try { this.editor.selection.moveToBookmark(bookmark); } catch (_) {}
+        try { this.editor.selection.moveToBookmark(bookmark); } catch (_) { }
     }
 
     _setTyping(isTyping) {
@@ -371,7 +394,7 @@ class CollaborationClient {
             this.connection.invoke('SendAwareness', this.entryId, {
                 isTyping: isTyping,
                 displayName: this.displayName
-            }).catch(() => {});
+            }).catch(() => { });
         }
     }
 
@@ -437,10 +460,10 @@ class CollaborationClient {
         const el = document.getElementById('collab-status');
         if (!el) return;
         const map = {
-            connected:    { text: '● Online',         cls: 'text-success' },
-            disconnected: { text: '● Offline',         cls: 'text-danger' },
+            connected: { text: '● Online', cls: 'text-success' },
+            disconnected: { text: '● Offline', cls: 'text-danger' },
             reconnecting: { text: '● Reconnecting...', cls: 'text-warning' },
-            error:        { text: '● Error',           cls: 'text-danger' },
+            error: { text: '● Error', cls: 'text-danger' },
         };
         const s = map[status] || map.disconnected;
         el.textContent = s.text;
