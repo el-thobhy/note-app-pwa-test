@@ -314,19 +314,20 @@ class CollaborationClient {
 
                         this.isUpdatingFromRemote = true;
                         this.isApplyingToEditor = true;
+                        try {
+                            this.ydoc.transact(() => {
+                                if (this.yText.length > 0) {
+                                    this.yText.delete(0, this.yText.length);
+                                }
+                                this.yText.insert(0, mergedContent);
+                            }, 'remote');
 
-                        this.ydoc.transact(() => {
-                            if (this.yText.length > 0) {
-                                this.yText.delete(0, this.yText.length);
+                            if (this.editor && !this.editor.removed) {
+                                this._safeSetContent(mergedContent);
                             }
-                            this.yText.insert(0, mergedContent);
-                        }, 'remote');
-
-                        this.isUpdatingFromRemote = false;
-                        this.isApplyingToEditor = false;
-
-                        if (this.editor && !this.editor.removed) {
-                            this._safeSetContent(mergedContent);
+                        } finally {
+                            this.isUpdatingFromRemote = false;
+                            this.isApplyingToEditor = false;
                         }
                         return;
                     }
