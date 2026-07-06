@@ -145,6 +145,13 @@ class CollaborationClient {
             if (!this.editor) return;
             if (serverVersion !== undefined && serverVersion <= this._serverVersion) return;
 
+            // Ambil konten editor terbaru sebelum merge (seperti flushPendingLocalChanges pada teletype)
+            const currentLocal = this.editor.getContent();
+            const normalizedLocal = this.editor.serializer.serialize(this.editor.parser.parse(currentLocal));
+            if (normalizedLocal !== this._baseContent) {
+                this._pendingContent = currentLocal;
+            }
+
             const prevBase = this._baseContent;
             const pending = this._pendingContent;
 
