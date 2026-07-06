@@ -146,6 +146,7 @@ class CollaborationClient {
                 }, 'remote');
 
                 this.baseContent = serverContent; // Perbarui base content resmi
+                this.lastContent = mergedContent; // Perbarui lastContent resmi agar event change tidak salah mendeteksi ketikan lokal
                 this._safeSetContent(mergedContent);
             } finally {
                 this.isUpdatingFromRemote = false;
@@ -323,6 +324,8 @@ class CollaborationClient {
                             }, 'remote');
 
                             if (this.editor && !this.editor.removed) {
+                                this.baseContent = mergedContent;
+                                this.lastContent = mergedContent;
                                 this._safeSetContent(mergedContent);
                             }
                         } finally {
@@ -373,6 +376,8 @@ class CollaborationClient {
 
             const finalContent = this.yText.toString();
             if (this.editor && !this.editor.removed) {
+                this.baseContent = finalContent;
+                this.lastContent = finalContent;
                 this._safeSetContent(finalContent);
             }
 
