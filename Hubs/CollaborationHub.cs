@@ -91,9 +91,8 @@ namespace NoteApp.Hubs
             }
             finally { docLock.Release(); }
 
-            // Kirim state ke client hanya kalau ada content
-            if (!string.IsNullOrEmpty(state.Content))
-                await Clients.Caller.SendAsync("ReceiveDocState", state.Content, state.Version);
+            // Kirim state ke client (selalu kirim agar client ter-inisialisasi)
+            await Clients.Caller.SendAsync("ReceiveDocState", state.Content ?? "", state.Version);
 
             await BroadcastUsers(entryId);
         }
@@ -171,6 +170,8 @@ namespace NoteApp.Hubs
 
             await Clients.Group(GroupName(entryId))
                 .SendAsync("ReceiveUpdate", resultContent, newVersion);
+
+            await Clients.Caller.SendAsync("UpdateAck", newVersion);
         }
 
         /// <summary>
