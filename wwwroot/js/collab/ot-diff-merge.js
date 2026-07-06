@@ -492,7 +492,7 @@
                 return cell;
             }
 
-            if (remoteContent === baseContent) {
+            if (normalize(remoteContent) === normalize(baseContent)) {
                 const cell = baseCell.cloneNode(true);
                 cell.innerHTML = localContent;
                 return cell;
