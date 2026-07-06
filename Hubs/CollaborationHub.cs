@@ -380,6 +380,143 @@ namespace NoteApp.Hubs
             };
             return colors[Math.Abs(connectionId.GetHashCode()) % colors.Length];
         }
+
+        // ============================================================
+        // YJS / OT HUBS SUPPORT FOR TELETYPE COLLABORATION
+        // ============================================================
+        private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, UserInfo>> _documentConnections
+            = new ConcurrentDictionary<string, ConcurrentDictionary<string, UserInfo>>();
+        private static readonly ConcurrentDictionary<string, string> _connectionToDocument
+            = new ConcurrentDictionary<string, string>();
+        private static readonly ConcurrentDictionary<string, HashSet<string>> _documentTypingUsers
+            = new ConcurrentDictionary<string, HashSet<string>>();
+
+        public class UserInfo
+        {
+            public string SiteId { get; set; } = "";
+            public string UserName { get; set; } = "";
+            public DateTime JoinedAt { get; set; }
+        }
+
+        public async Task JoinDocument(string documentId, string siteId, string userName)
+        {
+            try
+            {
+                if (_connectionToDocument.TryGetValue(Context.ConnectionId, out var oldDocumentId))
+                {
+                    if (oldDocumentId != documentId)
+                    {
+                        await LeaveDocument(oldDocumentId, siteId, userName);
+                    }
+                }
+
+                await Groups.AddToGroupAsync(Context.ConnectionId, documentId);
+                _connectionToDocument[Context.ConnectionId] = documentId;
+                var group = _documentConnections.GetOrAdd(documentId, _ => new ConcurrentDictionary<string, UserInfo>());
+
+                var userInfo = new UserInfo
+                {
+                    SiteId = siteId,
+                    UserName = userName,
+                    JoinedAt = DateTime.UtcNow
+                };
+                group[Context.ConnectionId] = userInfo;
+
+                var groupSize = group.Count;
+
+                // Send existing users list to new user
+                var existingUsers = new List<object>();
+                foreach (var kvp in group)
+                {
+                    if (kvp.Key != Context.ConnectionId)
+                    {
+                        existingUsers.Add(new
+                        {
+                            connectionId = kvp.Key,
+                            siteId = kvp.Value.SiteId,
+                            userName = kvp.Value.UserName,
+                            joinedAt = kvp.Value.JoinedAt
+                        });
+                    }
+                }
+                await Clients.Caller.SendAsync("existingUsers", existingUsers);
+
+                // Notify other users that someone joined
+                await Clients.OthersInGroup(documentId).SendAsync("userJoined", new
+                {
+                    connectionId = Context.ConnectionId,
+                    siteId = siteId,
+                    userName = userName,
+                    userCount = groupSize,
+                    timestamp = DateTime.UtcNow
+                });
+
+                // Send current user count to all members
+                await Clients.Group(documentId).SendAsync("userCount", groupSize);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in JoinDocument");
+            }
+        }
+
+        public async Task SendOperation(string documentId, string operationsJson, string siteId)
+        {
+            if (string.IsNullOrEmpty(documentId)) return;
+            await Clients.OthersInGroup(documentId).SendAsync("receiveOperation", operationsJson, siteId, documentId);
+        }
+
+        public async Task SendOperationOT(string documentId, string operationsJson, string siteId)
+        {
+            if (string.IsNullOrEmpty(documentId) || string.IsNullOrEmpty(operationsJson)) return;
+            await Clients.OthersInGroup(documentId).SendAsync("receiveOperationOT", operationsJson, siteId, documentId);
+        }
+
+        public async Task LeaveDocument(string documentId, string siteId, string userName)
+        {
+            try
+            {
+                await Groups.RemoveFromGroupAsync(Context.ConnectionId, documentId);
+
+                if (_connectionToDocument.TryRemove(Context.ConnectionId, out _))
+                {
+                    if (_documentConnections.TryGetValue(documentId, out var connections))
+                    {
+                        connections.TryRemove(Context.ConnectionId, out _);
+                        var userCount = connections.Count;
+
+                        if (_documentTypingUsers.TryGetValue(documentId, out var typingUsers))
+                        {
+                            lock (typingUsers)
+                            {
+                                typingUsers.Remove(siteId);
+                            }
+                        }
+
+                        // Broadcast user left ke semua user lain
+                        await Clients.OthersInGroup(documentId).SendAsync("userLeft", new
+                        {
+                            connectionId = Context.ConnectionId,
+                            siteId = siteId,
+                            userName = userName,
+                            userCount = userCount,
+                            timestamp = DateTime.UtcNow
+                        });
+
+                        await Clients.Group(documentId).SendAsync("userCount", userCount);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in LeaveDocument");
+            }
+        }
+
+        public async Task TestBroadcast(string message)
+        {
+            await Clients.All.SendAsync("testMessage", message, Context.ConnectionId);
+        }
     }
 
     public class DocState

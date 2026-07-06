@@ -113,6 +113,19 @@
 }
 
 @section Scripts {
+    <!-- Fallback Modern: Pake import map -->
+    <script type="importmap">
+        {
+            "imports": {
+                "yjs": "https://unpkg.com/yjs@13.6.0?module"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as Y from 'yjs';
+        window.Y = Y;
+        console.log('✅ Yjs loaded via import map! Version:', Y.version || '13.6.0');
+    </script>
     <script src="~/js/signalr.min.js"></script>
     <script src="~/js/diff-match-patch.js"></script>
     <script src="~/js/collab/ot-diff-merge.js" asp-append-version="true"></script>

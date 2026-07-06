@@ -1,76 +1,48 @@
 /**
- * collab-editor_2.js
- * Real-time collaboration: server LWW version guard + client-side 3-way merge.
- *
- * Alur normal:
- *   1. User ketik → simpan ke _pendingContent, schedule debounced send
- *   2. Saat debounce fire: kalau tidak ada op in-flight, kirim (content, clientVersion)
- *      Kalau ada in-flight: tunda, kirim setelah AckOp diterima
- *   3a. Server accept (clientVersion >= serverVersion):
- *       → broadcast ke peers via ReceiveUpdate
- *       → kirim UpdateAck ke pengirim → update _serverVersion, clear pending
- *   3b. Server reject (client ketinggalan):
- *       → kirim ReceiveUpdate dengan state terbaru ke pengirim
- *       → client merge: _threeWayMerge(_baseContent, serverContent, _pendingContent)
- *       → kirim hasil merge sebagai update baru
- *
- * Race condition fix:
- *   - _inflight flag: tidak kirim op baru saat masih menunggu AckOp
- *   - Setelah AckOp: kalau ada pending baru, langsung kirim
- *   - ReceiveDocState/ReceiveUpdate: normalisasi content setelah setContent()
- *     supaya _baseContent selalu dalam format yang sudah di-normalize TinyMCE
- *
- * _baseContent = content terakhir yang dikonfirmasi server (normalized)
- * _pendingContent = content lokal terbaru yang belum dikonfirmasi (atau null)
- * _inflight = true saat ada op yang sudah dikirim, menunggu AckOp
+ * COLLABORATION CLIENT WITH YJS + OT ENGINE
+ * File: collab-editor_2.js
+ * 
+ * Modernized version that uses Yjs + OTEngine client-side and ASP.NET Core SignalR.
  */
 
 class CollaborationClient {
     constructor(entryId, displayName, avatar) {
-        this.entryId = String(entryId);
+        this.entryId = entryId;
         this.displayName = displayName;
         this.avatar = avatar;
-        this.connection = null;
+        this.siteId = 'site_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
         this.editor = null;
 
-        this._connected = false;
-        this._initialized = false; // true setelah ReceiveDocState diterima
-        this._applyingRemote = false;
+        this.isConnected = false;
+        this.isUpdatingFromRemote = false;
+        this.isApplyingToEditor = false;
+        this.baseContent = ''; // Base asli yang terkonfirmasi oleh server
+        this.lastContent = ''; // Editor content terakhir untuk hitung diff
+        this.updateTimer = null;
+        this.UPDATE_DELAY = 100;
 
-        this._baseContent = '';   // content terakhir yang dikonfirmasi server (normalized)
-        this._serverVersion = 0;
-        this._pendingContent = null; // content lokal terbaru yang belum dikonfirmasi
+        this.activeUsers = new Map();
+        this.ydoc = null;
+        this.yText = null;
 
-        // Race condition guard: jangan kirim op baru saat masih menunggu AckOp
-        this._inflight = false;
-
-        this._sendDebounce = null;
-        this._maxDelayTimer = null;
-        this._isTyping = false;
-        this._typingTimer = null;
-
-        this._dmp = null;
-        this._peers = new Map();
+        this.otEngine = new OTEngine();
+        this.useOT = true;
+        this.remoteOpQueue = [];
+        this.isProcessingRemoteQueue = false;
     }
 
     async init(editorInstance) {
         this.editor = editorInstance;
 
-        if (typeof diff_match_patch !== 'undefined') {
-            this._dmp = new diff_match_patch();
-            this._dmp.Match_Threshold = 0.5;
-            this._dmp.Match_Distance = 5000;
-            this._dmp.Patch_Timeout = 1;
-        } else {
-            console.warn('[Collab] diff-match-patch tidak tersedia');
+        if (typeof Y === 'undefined') {
+            console.error('❌ Yjs library not loaded! Please check Views/Collaboration/Room.cshtml for import map.');
+            return;
         }
 
-        if (typeof OTEngine !== 'undefined') {
-            this._otEngine = new OTEngine();
-            console.log('[Collab] OTEngine initialized for 3-way merge');
-        } else {
-            console.warn('[Collab] OTEngine tidak tersedia');
-        }
+        console.log('🚀 Initializing Yjs + OTEngine Collaboration for:', this.entryId);
+
+        this.ydoc = new Y.Doc();
+        this.yText = this.ydoc.getText('tinymce');
 
         this.connection = new signalR.HubConnectionBuilder()
             .withUrl('/hubs/collaboration')
@@ -81,403 +53,409 @@ class CollaborationClient {
 
         try {
             await this.connection.start();
-            this._connected = true;
-            await this.connection.invoke('JoinEntry', this.entryId, this.displayName, this.avatar);
+            this.isConnected = true;
             this._showStatus('connected');
+
+            // Join the document group
+            await this.connection.invoke('JoinDocument', this.entryId, this.siteId, this.displayName);
+
+            if (this.editor && this.editor.initialized) {
+                this.lastContent = this.editor.getContent();
+                this.baseContent = this.editor.getContent();
+            }
+
+            // Sync initial content
+            const existingContent = this.editor.getContent();
+            if (existingContent && existingContent !== '<p></p>') {
+                this.ydoc.transact(() => {
+                    if (this.yText.length > 0) {
+                        this.yText.delete(0, this.yText.length);
+                    }
+                    this.yText.insert(0, existingContent);
+                });
+                this.lastContent = existingContent;
+                this.baseContent = existingContent;
+            }
+
+            this.setupYjsListeners();
         } catch (err) {
             console.error('[Collab] Connection failed:', err);
             this._showStatus('error');
         }
 
         this.connection.onreconnected(async () => {
-            this._connected = true;
-            this._initialized = false;
-            this._inflight = false;
-            this._pendingContent = null;
-            this._serverVersion = 0;
-            clearTimeout(this._sendDebounce);
-            clearTimeout(this._maxDelayTimer);
-            await this.connection.invoke('JoinEntry', this.entryId, this.displayName, this.avatar);
+            this.isConnected = true;
+            await this.connection.invoke('JoinDocument', this.entryId, this.siteId, this.displayName);
             this._showStatus('connected');
         });
+
         this.connection.onreconnecting(() => {
-            this._connected = false;
+            this.isConnected = false;
             this._showStatus('reconnecting');
         });
+
         this.connection.onclose(() => {
-            this._connected = false;
+            this.isConnected = false;
             this._showStatus('disconnected');
         });
     }
 
     _registerHandlers() {
-
-        /**
-         * ReceiveDocState — diterima saat join, ini initial state dari server.
-         * Set editor ke content ini, jadikan baseline.
-         * Setelah setContent, baca kembali untuk dapat versi normalized TinyMCE.
-         */
-        this.connection.on('ReceiveDocState', (content, version) => {
-            if (!this.editor) return;
-            this._applyingRemote = true;
-            try {
-                this.editor.setContent(content ?? '');
-                // Baca kembali setelah normalisasi TinyMCE
-                const normalized = this.editor.getContent();
-                this._baseContent = normalized;
-                this._serverVersion = version ?? 0;
-                this._pendingContent = null;
-                this._inflight = false;
-                this._initialized = true;
-            } finally {
-                this._applyingRemote = false;
+        this.connection.on('receiveOperationOT', (operationsJson, senderSiteId, senderDocumentId) => {
+            console.log('📡 [Collab] Received receiveOperationOT:', senderDocumentId, 'from:', senderSiteId);
+            if (senderDocumentId === this.entryId && senderSiteId !== this.siteId) {
+                this.handleRemoteOTOperation(operationsJson);
+            } else {
+                console.log('⏭️ [Collab] receiveOperationOT ignored (same site or diff entry)');
             }
         });
 
-        /**
-         * ReceiveUpdate — dua kasus:
-         * (A) Update dari peer → apply ke editor
-         * (B) Resync dari server karena client ketinggalan → merge lalu kirim ulang
-         *
-         * Setelah setContent, selalu baca kembali untuk normalisasi.
-         */
+        this.connection.on('receiveOperation', (operationsJson, senderSiteId, senderDocumentId) => {
+            console.log('📡 [Collab] Received receiveOperation:', senderDocumentId, 'from:', senderSiteId);
+            if (senderDocumentId === this.entryId && senderSiteId !== this.siteId) {
+                this.handleRemoteOperation(operationsJson);
+            }
+        });
+
+        // Handler untuk ReceiveUpdate (Full HTML update) demi kecocokan dengan Chaos Test
         this.connection.on('ReceiveUpdate', (serverContent, serverVersion) => {
+            console.log('📡 [Collab] Received ReceiveUpdate (Full HTML):', serverVersion);
             if (!this.editor) return;
-            if (serverVersion !== undefined && serverVersion <= this._serverVersion) return;
 
-            // Ambil konten editor terbaru sebelum merge (seperti flushPendingLocalChanges pada teletype)
-            const currentLocal = this.editor.getContent();
-            const normalizedLocal = this.editor.serializer.serialize(this.editor.parser.parse(currentLocal));
-            if (normalizedLocal !== this._baseContent) {
-                this._pendingContent = currentLocal;
-            }
+            const baseContent = this.baseContent; // Gunakan baseContent asli sebagai pembanding merge
+            const localContent = this.editor.getContent();
+            const remoteContent = serverContent;
 
-            const prevBase = this._baseContent;
-            const pending = this._pendingContent;
+            console.log('📊 --- ReceiveUpdate 3-WAY MERGE DEBUG ---');
+            console.log('BASE:', baseContent);
+            console.log('LOCAL:', localContent);
+            console.log('REMOTE:', remoteContent);
 
-            this._serverVersion = serverVersion ?? (this._serverVersion + 1);
+            const mergedContent = this.otEngine.smartThreeWayMerge(baseContent, localContent, remoteContent);
+            console.log('RESULT:', mergedContent);
 
-            // Normalisasi konten di memori untuk perbandingan agar terhindar dari loop akibat perbedaan format HTML server
-            const normalizedServer = this.editor.serializer.serialize(this.editor.parser.parse(serverContent));
-            const normalizedPending = pending !== null ? this.editor.serializer.serialize(this.editor.parser.parse(pending)) : null;
-
-            if (normalizedPending !== null && normalizedPending !== normalizedServer) {
-                // Ada perubahan lokal yang belum dikonfirmasi server
-                // Merge: base=prevBase, server=serverContent, local=pending
-                const merged = this._threeWayMerge(prevBase, serverContent, pending);
-                
-                this._applyingRemote = true;
-                try {
-                    const bookmark = this._getBookmark();
-                    
-                    // Normalisasi konten hasil merge
-                    const normalizedMerged = this.editor.serializer.serialize(this.editor.parser.parse(merged));
-                    
-                    // Set editor ke konten final hasil merge sekali saja
-                    this.editor.setContent(normalizedMerged);
-                    
-                    this._baseContent    = normalizedServer;
-                    this._pendingContent = normalizedMerged;
-                    this._restoreBookmark(bookmark);
-                } finally {
-                    this._applyingRemote = false;
-                }
-
-                // Kirim hasil merge ke server — reset inflight dulu supaya bisa kirim
-                this._inflight = false;
-                this._sendNow(this._pendingContent);
-
-            } else {
-                // Tidak ada pending — update murni dari peer, apply ke editor
-                this._pendingContent = null;
-                this._applyingRemote = true;
-                try {
-                    const localContent = this.editor.getContent();
-                    const normalizedLocal = this.editor.serializer.serialize(this.editor.parser.parse(localContent));
-                    if (normalizedLocal !== normalizedServer) {
-                        const bookmark = this._getBookmark();
-                        this.editor.setContent(normalizedServer);
-                        this._baseContent = normalizedServer;
-                        this._restoreBookmark(bookmark);
-                    } else {
-                        this._baseContent = normalizedServer;
-                    }
-                } finally {
-                    this._applyingRemote = false;
-                }
-            }
-        });
-
-        /**
-         * UpdateAck — server konfirmasi op kita diterima.
-         * Clear inflight, update version.
-         * Kalau ada pending baru yang terkumpul saat in-flight, kirim sekarang.
-         */
-        this.connection.on('UpdateAck', (newVersion) => {
-            this._serverVersion = newVersion;
-            this._inflight = false;
-
-            // Kalau ada perubahan lokal yang terkumpul saat in-flight, kirim sekarang
-            if (this._pendingContent !== null && this._pendingContent !== this._baseContent) {
-                this._sendNow(this._pendingContent);
-            } else {
-                this._pendingContent = null;
-            }
-        });
-
-        this.connection.on('ReceiveAwareness', (data) => {
-            if (data.isTyping) {
-                this._showPeerTyping(data.connectionId, data.displayName, data.color);
-            } else {
-                this._hidePeerTyping(data.connectionId);
-            }
-        });
-
-        this.connection.on('UsersOnline', (users) => {
-            this._renderOnlineUsers(users);
-            users.forEach(u => {
-                this._peers.set(u.connectionId, { displayName: u.displayName, color: u.color });
-            });
-        });
-    }
-
-    // ── Public API ───────────────────────────────────────────────────────────
-
-    /**
-     * Dipanggil dari TinyMCE event saat konten berubah.
-     * Jangan kirim apa-apa sebelum ReceiveDocState diterima.
-     */
-    sendContentUpdate(htmlContent) {
-        if (!this._connected || this._applyingRemote || !this._initialized) return;
-
-        this._pendingContent = htmlContent;
-        this._setTyping(true);
-        this._scheduleDebounce();
-
-        clearTimeout(this._typingTimer);
-        this._typingTimer = setTimeout(() => this._setTyping(false), 1500);
-    }
-
-    destroy() {
-        clearTimeout(this._sendDebounce);
-        clearTimeout(this._maxDelayTimer);
-        clearTimeout(this._typingTimer);
-        this._setTyping(false);
-        if (this.connection) {
-            this.connection.stop();
-            this.connection = null;
-        }
-        this._initialized = false;
-        this._inflight = false;
-    }
-
-    // ── Send logic ───────────────────────────────────────────────────────────
-
-    /**
-     * Schedule debounced send.
-     * Juga set max-delay timer supaya tidak terlalu lama nunggu debounce.
-     */
-    _scheduleDebounce() {
-        clearTimeout(this._sendDebounce);
-        this._sendDebounce = setTimeout(() => {
-            this._flushPending();
-        }, 300);
-
-        // Max delay: force flush setelah 2 detik meski user masih ketik
-        if (!this._maxDelayTimer) {
-            this._maxDelayTimer = setTimeout(() => {
-                this._maxDelayTimer = null;
-                clearTimeout(this._sendDebounce);
-                this._flushPending();
-            }, 2000);
-        }
-    }
-
-    /**
-     * Flush pending content ke server kalau tidak ada op in-flight.
-     * Kalau ada in-flight, pending akan dikirim saat AckOp diterima.
-     */
-    _flushPending() {
-        clearTimeout(this._maxDelayTimer);
-        this._maxDelayTimer = null;
-
-        if (!this._connected || !this._initialized) return;
-        if (this._pendingContent === null) return;
-        if (this._pendingContent === this._baseContent) {
-            this._pendingContent = null;
-            return;
-        }
-        if (this._inflight) {
-            // Ada op in-flight — pending akan dikirim saat AckOp
-            return;
-        }
-
-        this._sendNow(this._pendingContent);
-    }
-
-    /**
-     * Kirim content ke server sekarang (tanpa debounce).
-     * Set _inflight = true, update _baseContent ke content yang dikirim.
-     */
-    _sendNow(content) {
-        if (!this._connected || this._inflight) return;
-        if (content === this._baseContent) {
-            this._pendingContent = null;
-            return;
-        }
-
-        const versionSnapshot = this._serverVersion;
-        this._inflight = true;
-        // Update base ke content yang kita kirim — ini jadi titik divergence baru
-        this._baseContent = content;
-
-        this.connection.invoke('SendHtmlUpdate', this.entryId, content, versionSnapshot)
-            .catch(err => {
-                console.warn('[Collab] SendHtmlUpdate failed:', err);
-                // Rollback: biarkan pending tetap ada, reset inflight supaya bisa retry
-                this._inflight = false;
-                this._baseContent = this._baseContent; // tidak berubah, sudah di-set
-                // Retry setelah delay
-                setTimeout(() => this._flushPending(), 1000);
-            });
-    }
-
-    // ── 3-way merge ──────────────────────────────────────────────────────────
-
-    /**
-     * 3-way merge menggunakan diff-match-patch.
-     *
-     * base   = titik divergence terakhir yang dikonfirmasi server
-     * server = content terbaru dari server (sudah include perubahan peer)
-     * local  = perubahan lokal yang belum dikonfirmasi
-     *
-     * Strategi: buat patch dari base→local, apply ke server content.
-     * Artinya: perubahan lokal di-overlay ke atas perubahan server.
-     * Conflict resolution: server wins untuk bagian yang conflict.
-     */
-    _threeWayMerge(base, server, local) {
-        if (local === base) return server; // tidak ada perubahan lokal
-        if (server === base) return local;  // tidak ada perubahan server
-        if (local === server) return local;  // sudah sama
-
-        if (this._otEngine) {
             try {
-                console.log('[Collab] Using OTEngine for three-way merge');
-                return this._otEngine.smartThreeWayMerge(base, local, server);
-            } catch (e) {
-                console.warn('[Collab] OTEngine merge failed, falling back to diff-match-patch:', e);
+                this.isUpdatingFromRemote = true;
+                this.isApplyingToEditor = true;
+
+                this.ydoc.transact(() => {
+                    if (this.yText.length > 0) {
+                        this.yText.delete(0, this.yText.length);
+                    }
+                    this.yText.insert(0, mergedContent);
+                }, 'remote');
+
+                this.baseContent = serverContent; // Perbarui base content resmi
+                this._safeSetContent(mergedContent);
+            } finally {
+                this.isUpdatingFromRemote = false;
+                this.isApplyingToEditor = false;
+            }
+        });
+
+        this.connection.on('existingUsers', (users) => {
+            console.log('📋 [Collab] Existing users:', users);
+            users.forEach((user) => {
+                if (!this.activeUsers.has(user.siteId)) {
+                    this.activeUsers.set(user.siteId, {
+                        id: user.siteId,
+                        name: user.userName,
+                        color: this.getRandomColor(user.siteId)
+                    });
+                }
+            });
+            this.updateEditorAvatars();
+        });
+
+        this.connection.on('userJoined', (data) => {
+            console.log('👤 [Collab] User joined:', data);
+            if (!this.activeUsers.has(data.siteId)) {
+                this.activeUsers.set(data.siteId, {
+                    id: data.siteId,
+                    name: data.userName,
+                    color: this.getRandomColor(data.siteId)
+                });
+                this.updateEditorAvatars();
+            }
+        });
+
+        this.connection.on('userLeft', (data) => {
+            console.log('👋 [Collab] User left:', data);
+            this.activeUsers.delete(data.siteId);
+            this.updateEditorAvatars();
+        });
+
+        this.connection.on('userCount', (count) => {
+            console.log('📊 [Collab] Active user count:', count);
+            $(document).trigger('collaboration.userCount', count);
+        });
+    }
+
+    setupYjsListeners() {
+        if (!this.ydoc) return;
+
+        this.yText.observe(() => {
+            if (this.isApplyingToEditor) return;
+            if (this.isUpdatingFromRemote) return;
+
+            if (this.editor && !this.editor.removed) {
+                const newContent = this.yText.toString();
+                const currentContent = this.editor.getContent();
+
+                if (newContent !== currentContent) {
+                    this.isApplyingToEditor = true;
+                    try {
+                        this._safeSetContent(newContent);
+                    } catch (err) {
+                        console.error('❌ Error setting editor content:', err);
+                    }
+                    this.isApplyingToEditor = false;
+                }
+            }
+        });
+    }
+
+    async flushPendingLocalChanges() {
+        if (this.editor && !this.editor.removed && this.ydoc && this.yText && !this.isUpdatingFromRemote && !this.isApplyingToEditor) {
+            const currentContent = this.editor.getContent();
+            if (currentContent !== this.lastContent) {
+                this.sendContentUpdate(currentContent);
             }
         }
+    }
 
-        if (!this._dmp) return server; // fallback tanpa dmp
+    sendContentUpdate(newContent) {
+        if (!this.isConnected || !this.editor || this.editor.removed) return;
+        if (this.isUpdatingFromRemote || this.isApplyingToEditor) return;
+        if (newContent === this.lastContent) return;
+
+        const diffs = this.otEngine.computeDiff(this.lastContent, newContent);
+        if (diffs.length === 0) return;
+
+        const operations = diffs.map(diff => ({
+            ...diff,
+            id: this.otEngine.generateOperationId(),
+            timestamp: Date.now(),
+            siteId: this.siteId,
+            documentId: this.entryId,
+            version: this.otEngine.documentVersion,
+            isHTML: true
+        }));
 
         try {
-            const localPatches = this._dmp.patch_make(base, local);
-            const [merged, results] = this._dmp.patch_apply(localPatches, server);
-            const failCount = results.filter(r => !r).length;
-            if (failCount > 0) {
-                console.debug(`[Collab] Merge: ${failCount}/${results.length} patches failed, server wins for those parts`);
+            this.isApplyingToEditor = true;
+
+            for (const op of operations) {
+                this.otEngine.enqueueOperation(op);
             }
-            return merged;
-        } catch (e) {
-            console.warn('[Collab] Merge failed, using server content:', e);
-            return server;
+
+            this.ydoc.transact(() => {
+                if (this.yText.length > 0) {
+                    this.yText.delete(0, this.yText.length);
+                }
+                this.yText.insert(0, newContent);
+            }, 'local');
+
+            const opsJson = JSON.stringify(operations);
+            this.baseContent = newContent; // Update base content secara sinkron agar tidak race dengan ReceiveUpdate
+            this.connection.invoke('SendOperationOT', this.entryId, opsJson, this.siteId)
+                .then(() => {
+                    console.log('✅ [Collab] SendOperationOT broadcasted successfully');
+                    operations.forEach(op => this.otEngine.markSynced(op.id));
+                })
+                .catch(err => console.error('❌ [Collab] Broadcast failed:', err));
+
+            this.lastContent = newContent;
+        } catch (error) {
+            console.error('Failed to apply OT operations:', error);
+        } finally {
+            this.isApplyingToEditor = false;
         }
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+    async handleRemoteOTOperation(operationsJson) {
+        if (!this.useOT) return;
+
+        console.log('📥 [Collab] Enqueueing remote OT operation, current queue size:', this.remoteOpQueue.length);
+        this.remoteOpQueue.push(operationsJson);
+
+        if (this.isProcessingRemoteQueue) return;
+        this.isProcessingRemoteQueue = true;
+
+        try {
+            while (this.remoteOpQueue.length > 0) {
+                const currentOpsJson = this.remoteOpQueue.shift();
+                console.log('⚙️ [Collab] Processing remote operation...');
+                await this._processSingleRemoteOperation(currentOpsJson);
+            }
+        } finally {
+            this.isProcessingRemoteQueue = false;
+        }
+    }
+
+    async _processSingleRemoteOperation(operationsJson) {
+        await this.flushPendingLocalChanges();
+
+        try {
+            let operations = JSON.parse(operationsJson);
+            if (!Array.isArray(operations) || operations.length === 0) return;
+
+            const hasLocalChanges = this.otEngine.getPendingOperations().length > 0;
+            const currentContent = this.yText.toString();
+
+            if (hasLocalChanges) {
+                for (const op of operations) {
+                    if (op.isFullReplace) {
+                        const baseContent = op.oldText || this.lastContent || currentContent;
+                        const localContent = currentContent;
+                        const remoteContent = op.newText || op.text || '';
+
+                        const mergedContent = this.otEngine.smartThreeWayMerge(baseContent, localContent, remoteContent);
+
+                        this.isUpdatingFromRemote = true;
+                        this.isApplyingToEditor = true;
+
+                        this.ydoc.transact(() => {
+                            if (this.yText.length > 0) {
+                                this.yText.delete(0, this.yText.length);
+                            }
+                            this.yText.insert(0, mergedContent);
+                        }, 'remote');
+
+                        this.isUpdatingFromRemote = false;
+                        this.isApplyingToEditor = false;
+
+                        if (this.editor && !this.editor.removed) {
+                            this._safeSetContent(mergedContent);
+                        }
+                        return;
+                    }
+                }
+            }
+
+            const pendingOps = this.otEngine.getPendingOperations();
+            const transformedOps = this.otEngine.transformOperation(operations, pendingOps);
+
+            this.isUpdatingFromRemote = true;
+            this.isApplyingToEditor = true;
+
+            let docContent = this.yText.toString();
+
+            for (const op of transformedOps) {
+                if (op.isFullReplace) {
+                    const newContent = op.newText || op.text || '';
+                    if (newContent === docContent) continue;
+                    if (this.yText.length > 0) {
+                        this.yText.delete(0, this.yText.length);
+                    }
+                    this.yText.insert(0, newContent);
+                    docContent = this.yText.toString();
+                    continue;
+                }
+
+                if (op.type === 'delete') {
+                    const pos = op.position;
+                    const deleteLen = Math.min(op.length || 1, docContent.length - pos);
+                    if (pos >= 0 && deleteLen > 0) {
+                        this.yText.delete(pos, deleteLen);
+                        docContent = this.yText.toString();
+                    }
+                } else if (op.type === 'insert') {
+                    const pos = op.position;
+                    const text = op.text || op.html || '';
+                    if (pos >= 0 && pos <= docContent.length) {
+                        this.yText.insert(pos, text);
+                        docContent = this.yText.toString();
+                    }
+                }
+            }
+
+            const finalContent = this.yText.toString();
+            if (this.editor && !this.editor.removed) {
+                this._safeSetContent(finalContent);
+            }
+
+            this.isUpdatingFromRemote = false;
+            this.isApplyingToEditor = false;
+        } catch (err) {
+            console.error('Failed to apply remote OT operation:', err);
+            this.isUpdatingFromRemote = false;
+            this.isApplyingToEditor = false;
+        }
+    }
+
+    _safeSetContent(content) {
+        if (!this.editor || this.editor.removed) return;
+
+        let bookmark = null;
+        try {
+            if (this.editor.selection) {
+                bookmark = this.editor.selection.getBookmark(2, true);
+            }
+        } catch (e) {}
+
+        this.editor.setContent(content);
+        this.lastContent = content;
+
+        if (bookmark) {
+            try {
+                if (this.editor.selection) {
+                    this.editor.selection.moveToBookmark(bookmark);
+                }
+            } catch (e) {}
+        }
+    }
+
+    updateEditorAvatars() {
+        if (!this.editor || !this.editor.updateCollaborators) return;
+        const list = Array.from(this.activeUsers.values());
+        this.editor.updateCollaborators(list);
+    }
+
+    getRandomColor(siteId) {
+        const colors = ['#667eea', '#764ba2', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#fee140', '#30cfd0'];
+        const index = siteId.length % colors.length;
+        return colors[index];
+    }
 
     _getBookmark() {
-        try { return this.editor.selection.getBookmark(2, true); } catch (_) { return null; }
+        try {
+            return this.editor.selection.getBookmark(2, true);
+        } catch (e) {
+            return null;
+        }
     }
 
     _restoreBookmark(bookmark) {
         if (!bookmark) return;
-        try { this.editor.selection.moveToBookmark(bookmark); } catch (_) { }
-    }
-
-    _setTyping(isTyping) {
-        if (this._isTyping === isTyping) return;
-        this._isTyping = isTyping;
-        if (this._connected && this.connection) {
-            this.connection.invoke('SendAwareness', this.entryId, {
-                isTyping: isTyping,
-                displayName: this.displayName
-            }).catch(() => { });
-        }
-    }
-
-    // ── UI ───────────────────────────────────────────────────────────────────
-
-    _showPeerTyping(connectionId, displayName, color) {
-        const container = document.getElementById('collab-typing-indicators');
-        if (!container) return;
-        const id = `typing-${connectionId.replace(/[^a-z0-9]/gi, '')}`;
-        let el = document.getElementById(id);
-        if (!el) {
-            el = document.createElement('span');
-            el.id = id;
-            el.style.cssText =
-                `background:${color}22;border:1px solid ${color};color:${color};` +
-                `border-radius:12px;padding:2px 10px;font-size:0.75rem;` +
-                `font-weight:600;display:inline-flex;align-items:center;gap:5px;`;
-            el.innerHTML =
-                `<span style="width:7px;height:7px;border-radius:50%;background:${color};` +
-                `display:inline-block;animation:collab-pulse 1s infinite;"></span>` +
-                `${displayName} mengetik...`;
-            container.appendChild(el);
-        }
-        const peer = this._peers.get(connectionId) || {};
-        clearTimeout(peer.typingTimer);
-        peer.typingTimer = setTimeout(() => this._hidePeerTyping(connectionId), 3000);
-        this._peers.set(connectionId, { ...peer, displayName, color });
-    }
-
-    _hidePeerTyping(connectionId) {
-        const el = document.getElementById(`typing-${connectionId.replace(/[^a-z0-9]/gi, '')}`);
-        if (el) el.remove();
-    }
-
-    _renderOnlineUsers(users) {
-        const container = document.getElementById('collab-users');
-        if (!container) return;
-        container.innerHTML = '';
-        users.forEach(user => {
-            const el = document.createElement('div');
-            el.className = 'collab-avatar';
-            el.title = user.displayName;
-            el.style.borderColor = user.color;
-            el.style.outline = `2px solid ${user.color}`;
-            if (user.avatar) {
-                el.innerHTML = `<img src="${user.avatar}" alt="${user.displayName}" />`;
-            } else {
-                const initials = user.displayName.split(' ')
-                    .map(n => n[0]).join('').substring(0, 2).toUpperCase();
-                el.innerHTML = `<span style="background:${user.color}">${initials}</span>`;
-            }
-            container.appendChild(el);
-        });
-        const counter = document.getElementById('collab-count');
-        if (counter) {
-            counter.textContent = users.length > 1
-                ? `${users.length} orang sedang mengedit`
-                : 'Hanya kamu';
-        }
+        try {
+            this.editor.selection.moveToBookmark(bookmark);
+        } catch (e) {}
     }
 
     _showStatus(status) {
-        const el = document.getElementById('collab-status');
-        if (!el) return;
-        const map = {
-            connected: { text: '● Online', cls: 'text-success' },
-            disconnected: { text: '● Offline', cls: 'text-danger' },
-            reconnecting: { text: '● Reconnecting...', cls: 'text-warning' },
-            error: { text: '● Error', cls: 'text-danger' },
-        };
-        const s = map[status] || map.disconnected;
-        el.textContent = s.text;
-        el.className = `collab-status-text ${s.cls}`;
+        const badge = document.getElementById('collab-status-badge');
+        if (!badge) return;
+        badge.className = 'badge rounded-pill align-middle ms-2';
+        if (status === 'connected') {
+            badge.className += ' bg-success';
+            badge.innerText = 'Online';
+        } else if (status === 'reconnecting') {
+            badge.className += ' bg-warning text-dark';
+            badge.innerText = 'Reconnecting...';
+        } else {
+            badge.className += ' bg-danger';
+            badge.innerText = 'Offline';
+        }
+    }
+
+    destroy() {
+        if (this.connection && this.isConnected) {
+            this.connection.invoke('LeaveDocument', this.entryId, this.siteId, this.displayName)
+                .then(() => this.connection.stop())
+                .catch(() => {});
+        }
+        this.isConnected = false;
+        instances.delete(this.id);
     }
 }
-
-window.CollaborationClient = CollaborationClient;

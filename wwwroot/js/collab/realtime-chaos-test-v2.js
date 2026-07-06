@@ -87,6 +87,8 @@
             // Set baseline konten di client agar sinkron
             const baseContent = this.editor.getContent();
             this.client._baseContent = baseContent;
+            this.client.baseContent = baseContent; // Mendukung client Yjs/OT baru
+            this.client.lastContent = baseContent; // Mendukung client Yjs/OT baru
             this.client._pendingContent = null;
             this.client._serverVersion = 1;
 
@@ -116,6 +118,11 @@
                         }
                     }, 20);
                     
+                    return Promise.resolve();
+                }
+                if (methodName === 'SendOperationOT') {
+                    currentSimulatedServerContent = this.editor.getContent();
+                    simulatedServerVersion++;
                     return Promise.resolve();
                 }
                 return originalInvoke.apply(this.client.connection, [methodName, ...args]);
