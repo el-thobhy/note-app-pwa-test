@@ -150,17 +150,20 @@ class CollaborationClient {
 
             this._serverVersion = serverVersion ?? (this._serverVersion + 1);
 
-            if (pending !== null && pending !== serverContent) {
+            // Normalisasi konten di memori untuk perbandingan agar terhindar dari loop akibat perbedaan format HTML server
+            const normalizedServer = this.editor.serializer.serialize(this.editor.parser.parse(serverContent));
+            const normalizedPending = pending !== null ? this.editor.serializer.serialize(this.editor.parser.parse(pending)) : null;
+
+            if (normalizedPending !== null && normalizedPending !== normalizedServer) {
                 // Ada perubahan lokal yang belum dikonfirmasi server
                 // Merge: base=prevBase, server=serverContent, local=pending
                 const merged = this._threeWayMerge(prevBase, serverContent, pending);
-
+                
                 this._applyingRemote = true;
                 try {
                     const bookmark = this._getBookmark();
                     
-                    // Normalisasi konten di memori tanpa merusak DOM editor dua kali
-                    const normalizedServer = this.editor.serializer.serialize(this.editor.parser.parse(serverContent));
+                    // Normalisasi konten hasil merge
                     const normalizedMerged = this.editor.serializer.serialize(this.editor.parser.parse(merged));
                     
                     // Set editor ke konten final hasil merge sekali saja
@@ -183,14 +186,14 @@ class CollaborationClient {
                 this._applyingRemote = true;
                 try {
                     const localContent = this.editor.getContent();
-                    if (localContent !== serverContent) {
+                    const normalizedLocal = this.editor.serializer.serialize(this.editor.parser.parse(localContent));
+                    if (normalizedLocal !== normalizedServer) {
                         const bookmark = this._getBookmark();
-                        this.editor.setContent(serverContent);
-                        const normalized = this.editor.getContent();
-                        this._baseContent = normalized;
+                        this.editor.setContent(normalizedServer);
+                        this._baseContent = normalizedServer;
                         this._restoreBookmark(bookmark);
                     } else {
-                        this._baseContent = localContent;
+                        this._baseContent = normalizedServer;
                     }
                 } finally {
                     this._applyingRemote = false;
