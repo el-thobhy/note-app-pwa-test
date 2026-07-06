@@ -159,13 +159,12 @@ class CollaborationClient {
                 try {
                     const bookmark = this._getBookmark();
                     
-                    // Dapatkan versi normalisasi dari serverContent untuk _baseContent
-                    this.editor.setContent(serverContent);
-                    const normalizedServer = this.editor.getContent();
+                    // Normalisasi konten di memori tanpa merusak DOM editor dua kali
+                    const normalizedServer = this.editor.serializer.serialize(this.editor.parser.parse(serverContent));
+                    const normalizedMerged = this.editor.serializer.serialize(this.editor.parser.parse(merged));
                     
-                    // Set kembali ke merged content untuk editor dan _pendingContent
-                    this.editor.setContent(merged);
-                    const normalizedMerged = this.editor.getContent();
+                    // Set editor ke konten final hasil merge sekali saja
+                    this.editor.setContent(normalizedMerged);
                     
                     this._baseContent    = normalizedServer;
                     this._pendingContent = normalizedMerged;

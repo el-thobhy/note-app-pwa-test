@@ -509,6 +509,21 @@
             if (local === base) return remote;
             if (remote === base) return local;
 
+            // Gunakan diff-match-patch jika tersedia untuk merge teks yang jauh lebih kokoh & menghindari duplikasi
+            if (typeof diff_match_patch !== 'undefined') {
+                try {
+                    const dmp = new diff_match_patch();
+                    dmp.Match_Threshold = 0.5;
+                    dmp.Match_Distance = 1000;
+                    dmp.Patch_Timeout = 1;
+                    const patches = dmp.patch_make(base, local);
+                    const [merged, results] = dmp.patch_apply(patches, remote);
+                    return merged;
+                } catch (e) {
+                    console.warn('[Collab] DMP merge failed, falling back to Myers diff:', e);
+                }
+            }
+
             const baseTokens = this.tokenizeHTML(base);
             const localTokens = this.tokenizeHTML(local);
             const remoteTokens = this.tokenizeHTML(remote);
