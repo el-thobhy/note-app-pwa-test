@@ -576,7 +576,19 @@ class CollaborationClient {
     _safeSetContent(content) {
         if (!this.editor || this.editor.removed) return;
 
-        if (this.editor.getContent() === content) {
+        const normalizeHTML = (html) => {
+            if (!html) return '';
+            return html
+                .replace(/<span[^>]*data-mce-type="bookmark"[^>]*>.*?<\/span>/gi, '') // Strip bookmark spans
+                .replace(/(&nbsp;|\u00a0)/gi, ' ')
+                .replace(/\s*style="[^"]*"\s*/gi, ' ')               // Strip style attributes
+                .replace(/\s*data-mce-[a-z0-9-]*="[^"]*"\s*/gi, ' ') // Strip data-mce-... attributes
+                .replace(/\s+/g, ' ')                                  // Normalize spaces
+                .replace(/>\s+</g, '><')                               // Normalize spacing between tags
+                .trim();
+        };
+
+        if (normalizeHTML(this.editor.getContent()) === normalizeHTML(content)) {
             this.lastContent = content;
             return;
         }
