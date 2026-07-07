@@ -3,10 +3,11 @@
  * File: collab-editor_2.js
  * 
  * Modernized version that uses Yjs + OTEngine client-side and ASP.NET Core SignalR.
+ * Aligned with collaboration-teletype.js featuring Chat Integration & Pending Offline Queue.
  */
 
 class CollaborationClient {
-    constructor(entryId, displayName, avatar) {
+    constructor(entryId, displayName, avatar, config = {}) {
         this.entryId = entryId;
         this.displayName = displayName;
         this.avatar = avatar;
@@ -29,6 +30,13 @@ class CollaborationClient {
         this.useOT = true;
         this.remoteOpQueue = [];
         this.isProcessingRemoteQueue = false;
+
+        // Pending queue for offline mode
+        this.pendingQueue = [];
+
+        // Chat Integration
+        this.chat = null;
+        this.chatEnabled = config.enableChat !== false;
     }
 
     async init(editorInstance) {
@@ -78,6 +86,10 @@ class CollaborationClient {
             }
 
             this.setupYjsListeners();
+            this.setupEditorListeners();
+
+            // Initialize chat if enabled
+            this.initChat();
         } catch (err) {
             console.error('[Collab] Connection failed:', err);
             this._showStatus('error');
@@ -87,6 +99,7 @@ class CollaborationClient {
             this.isConnected = true;
             await this.connection.invoke('JoinDocument', this.entryId, this.siteId, this.displayName);
             this._showStatus('connected');
+            setTimeout(() => this.flushPendingQueue(), 500);
         });
 
         this.connection.onreconnecting(() => {
@@ -161,7 +174,8 @@ class CollaborationClient {
                     this.activeUsers.set(user.siteId, {
                         id: user.siteId,
                         name: user.userName,
-                        color: this.getRandomColor(user.siteId)
+                        color: this.getRandomColor(user.siteId),
+                        joinedAt: user.joinedAt
                     });
                 }
             });
@@ -170,11 +184,13 @@ class CollaborationClient {
 
         this.connection.on('userJoined', (data) => {
             console.log('👤 [Collab] User joined:', data);
+            this.showNotification(`${data.userName} joined the document (${data.userCount} online)`, 'info');
             if (!this.activeUsers.has(data.siteId)) {
                 this.activeUsers.set(data.siteId, {
                     id: data.siteId,
                     name: data.userName,
-                    color: this.getRandomColor(data.siteId)
+                    color: this.getRandomColor(data.siteId),
+                    joinedAt: data.timestamp
                 });
                 this.updateEditorAvatars();
             }
@@ -182,6 +198,7 @@ class CollaborationClient {
 
         this.connection.on('userLeft', (data) => {
             console.log('👋 [Collab] User left:', data);
+            this.showNotification(`${data.userName} left the document (${data.userCount} online)`, 'info');
             this.activeUsers.delete(data.siteId);
             this.updateEditorAvatars();
         });
@@ -189,7 +206,15 @@ class CollaborationClient {
         this.connection.on('userCount', (count) => {
             console.log('📊 [Collab] Active user count:', count);
             $(document).trigger('collaboration.userCount', count);
+            this.updateOnlineCount(count);
         });
+    }
+
+    showNotification(message, type) {
+        console.log(`[${type}] ${message}`);
+        if (window.showToast) {
+            window.showToast(message, type);
+        }
     }
 
     setupYjsListeners() {
@@ -216,21 +241,65 @@ class CollaborationClient {
         });
     }
 
+    setupEditorListeners() {
+        if (!this.editor) return;
+
+        const bindEvents = () => {
+            console.log('📝 Binding editor events for:', this.entryId);
+            this.editor.on('keyup change undo redo', () => {
+                if (this.isUpdatingFromRemote) return;
+                if (this.isApplyingToEditor) return;
+
+                if (this.updateTimer) clearTimeout(this.updateTimer);
+                this.updateTimer = setTimeout(() => {
+                    if (this.useOT) {
+                        this.sendLocalChangesWithOT();
+                    } else {
+                        this.sendLocalChangesToYjs();
+                    }
+                }, this.UPDATE_DELAY);
+            });
+        };
+
+        if (this.editor.initialized) {
+            bindEvents();
+        } else {
+            this.editor.on('init', bindEvents);
+        }
+    }
+
     async flushPendingLocalChanges() {
+        if (this.updateTimer) {
+            clearTimeout(this.updateTimer);
+            this.updateTimer = null;
+        }
         if (this.editor && !this.editor.removed && this.ydoc && this.yText && !this.isUpdatingFromRemote && !this.isApplyingToEditor) {
             const currentContent = this.editor.getContent();
             if (currentContent !== this.lastContent) {
-                this.sendContentUpdate(currentContent);
+                console.log('⚡ Flushing pending local changes before applying remote...');
+                if (this.useOT) {
+                    await this.sendLocalChangesWithOT();
+                } else {
+                    this.sendLocalChangesToYjs();
+                }
             }
         }
     }
 
-    sendContentUpdate(newContent) {
+    async sendLocalChangesWithOT() {
         if (!this.isConnected || !this.editor || this.editor.removed) return;
-        if (this.isUpdatingFromRemote || this.isApplyingToEditor) return;
+        if (!this.ydoc || !this.yText) return;
+        if (this.isUpdatingFromRemote) return;
+        if (this.isApplyingToEditor) return;
+
+        const newContent = this.editor.getContent();
         if (newContent === this.lastContent) return;
 
-        const diffs = this.otEngine.computeDiff(this.lastContent, newContent);
+        const initialLastContent = this.lastContent;
+
+        console.log('✍️ Computing diff with versioned merge...');
+        const diffs = this.otEngine.computeDiff(initialLastContent, newContent);
+
         if (diffs.length === 0) return;
 
         const operations = diffs.map(diff => ({
@@ -247,37 +316,84 @@ class CollaborationClient {
             this.isApplyingToEditor = true;
 
             for (const op of operations) {
-                this.otEngine.enqueueOperation(op);
+                await this.otEngine.enqueueOperation(op);
             }
 
-            this.ydoc.transact(() => {
-                if (this.yText.length > 0) {
-                    this.yText.delete(0, this.yText.length);
-                }
-                this.yText.insert(0, newContent);
-            }, 'local');
+            // Periksa apakah ada pembaruan remote yang masuk selama proses await (mengubah lastContent)
+            if (this.lastContent === initialLastContent) {
+                this.ydoc.transact(() => {
+                    if (this.yText.length > 0) {
+                        this.yText.delete(0, this.yText.length);
+                    }
+                    this.yText.insert(0, newContent);
+                }, 'local');
 
-            const opsJson = JSON.stringify(operations);
-            this.baseContent = newContent; // Update base content secara sinkron agar tidak race dengan ReceiveUpdate
-            this.connection.invoke('SendOperationOT', this.entryId, opsJson, this.siteId)
-                .then(() => {
-                    console.log('✅ [Collab] SendOperationOT broadcasted successfully');
-                    operations.forEach(op => this.otEngine.markSynced(op.id));
-                })
-                .catch(err => console.error('❌ [Collab] Broadcast failed:', err));
+                this.baseContent = newContent;
+                this.lastContent = newContent;
+            } else {
+                console.log('🔄 Pembaruan remote terintegrasi selama await, melewatkan penulisan ulang konten lokal.');
+            }
 
-            this.lastContent = newContent;
+            this.broadcastOTOperations(operations).catch(err => console.error(err));
         } catch (error) {
-            console.error('Failed to apply OT operations:', error);
+            console.error('❌ Failed to apply OT operations:', error);
+            this.fallbackFullReplace(newContent);
         } finally {
             this.isApplyingToEditor = false;
         }
     }
 
+    async broadcastOTOperations(operations) {
+        const opsJson = JSON.stringify(operations);
+
+        if (this.isConnected && this.connection) {
+            try {
+                await this.connection.invoke('SendOperationOT', this.entryId, opsJson, this.siteId);
+                console.log('📤 Broadcasted', operations.length, 'OT operations');
+
+                operations.forEach(op => {
+                    this.otEngine.markSynced(op.id);
+                });
+            } catch (err) {
+                console.error('❌ Broadcast failed:', err);
+                this.pendingQueue.push({
+                    documentId: this.entryId,
+                    operationsJson: opsJson,
+                    siteId: this.siteId,
+                    isOT: true
+                });
+            }
+        } else {
+            this.pendingQueue.push({
+                documentId: this.entryId,
+                operationsJson: opsJson,
+                siteId: this.siteId,
+                isOT: true
+            });
+        }
+    }
+
+    flushPendingQueue() {
+        if (this.pendingQueue.length === 0) return;
+        if (!this.connection || !this.isConnected) return;
+
+        console.log(`🔁 Flushing ${this.pendingQueue.length} queued operations...`);
+        const snapshot = this.pendingQueue.splice(0, this.pendingQueue.length);
+        snapshot.forEach((item) => {
+            if (item.isOT) {
+                this.connection.invoke('SendOperationOT', this.entryId, item.operationsJson, this.siteId)
+                    .catch(() => this.pendingQueue.push(item));
+            } else {
+                this.connection.invoke('SendOperation', this.entryId, item.updateBase64, this.siteId)
+                    .catch(() => this.pendingQueue.push(item));
+            }
+        });
+    }
+
     async handleRemoteOTOperation(operationsJson) {
         if (!this.useOT) return;
 
-        console.log('📥 [Collab] Enqueueing remote OT operation, current queue size:', this.remoteOpQueue.length);
+        this.remoteOpQueue = this.remoteOpQueue || [];
         this.remoteOpQueue.push(operationsJson);
 
         if (this.isProcessingRemoteQueue) return;
@@ -286,7 +402,6 @@ class CollaborationClient {
         try {
             while (this.remoteOpQueue.length > 0) {
                 const currentOpsJson = this.remoteOpQueue.shift();
-                console.log('⚙️ [Collab] Processing remote operation...');
                 await this._processSingleRemoteOperation(currentOpsJson);
             }
         } finally {
@@ -315,22 +430,21 @@ class CollaborationClient {
 
                         this.isUpdatingFromRemote = true;
                         this.isApplyingToEditor = true;
-                        try {
-                            this.ydoc.transact(() => {
-                                if (this.yText.length > 0) {
-                                    this.yText.delete(0, this.yText.length);
-                                }
-                                this.yText.insert(0, mergedContent);
-                            }, 'remote');
 
-                            if (this.editor && !this.editor.removed) {
-                                this.baseContent = mergedContent;
-                                this.lastContent = mergedContent;
-                                this._safeSetContent(mergedContent);
+                        this.ydoc.transact(() => {
+                            if (this.yText.length > 0) {
+                                this.yText.delete(0, this.yText.length);
                             }
-                        } finally {
-                            this.isUpdatingFromRemote = false;
-                            this.isApplyingToEditor = false;
+                            this.yText.insert(0, mergedContent);
+                        }, 'remote');
+
+                        this.isUpdatingFromRemote = false;
+                        this.isApplyingToEditor = false;
+
+                        if (this.editor && !this.editor.removed) {
+                            this.baseContent = mergedContent;
+                            this.lastContent = mergedContent;
+                            this._safeSetContent(mergedContent);
                         }
                         return;
                     }
@@ -390,6 +504,75 @@ class CollaborationClient {
         }
     }
 
+    // Compatibility alias for chaos tests
+    sendContentUpdate(newContent) {
+        if (this.useOT) {
+            this.sendLocalChangesWithOT();
+        } else {
+            this.sendLocalChangesToYjs();
+        }
+    }
+
+    sendLocalChangesToYjs() {
+        if (!this.isConnected || !this.editor || this.editor.removed) return;
+        if (!this.ydoc || !this.yText) return;
+        if (this.isUpdatingFromRemote) return;
+        if (this.isApplyingToEditor) return;
+
+        const newContent = this.editor.getContent();
+        if (newContent === this.lastContent) return;
+
+        this.isApplyingToEditor = true;
+        this.ydoc.transact(() => {
+            if (this.yText.length > 0) {
+                this.yText.delete(0, this.yText.length);
+            }
+            this.yText.insert(0, newContent);
+        });
+        this.isApplyingToEditor = false;
+        this.lastContent = newContent;
+    }
+
+    async handleRemoteOperation(operationsBase64) {
+        if (this.isUpdatingFromRemote) return;
+
+        await this.flushPendingLocalChanges();
+
+        try {
+            const update = Uint8Array.from(atob(operationsBase64), c => c.charCodeAt(0));
+            if (update.length === 0) return;
+
+            this.isUpdatingFromRemote = true;
+            this.ydoc.transact(() => {
+                Y.applyUpdate(this.ydoc, update);
+            }, 'remote');
+
+            const afterContent = this.yText.toString();
+            if (this.editor && !this.editor.removed) {
+                this.isApplyingToEditor = true;
+                this._safeSetContent(afterContent);
+                this.isApplyingToEditor = false;
+            }
+
+            this.isUpdatingFromRemote = false;
+        } catch (err) {
+            console.error('❌ Failed to apply remote operation:', err);
+            this.isUpdatingFromRemote = false;
+        }
+    }
+
+    fallbackFullReplace(newContent) {
+        this.isApplyingToEditor = true;
+        this.ydoc.transact(() => {
+            if (this.yText.length > 0) {
+                this.yText.delete(0, this.yText.length);
+            }
+            this.yText.insert(0, newContent);
+        });
+        this.isApplyingToEditor = false;
+        this.lastContent = newContent;
+    }
+
     _safeSetContent(content) {
         if (!this.editor || this.editor.removed) return;
 
@@ -414,29 +597,38 @@ class CollaborationClient {
 
     updateEditorAvatars() {
         if (!this.editor || !this.editor.updateCollaborators) return;
-        const list = Array.from(this.activeUsers.values());
-        this.editor.updateCollaborators(list);
+        const allConnections = Array.from(this.activeUsers.values()).map(u => ({
+            ...u,
+            isMe: u.id === this.siteId
+        }));
+
+        const currentUser = {
+            id: this.siteId,
+            name: this.displayName || 'You',
+            color: '#4caf50',
+            isMe: true
+        };
+
+        const distinctUsers = [];
+        const seenNames = new Set();
+
+        seenNames.add(currentUser.name);
+        distinctUsers.push(currentUser);
+
+        allConnections.forEach(u => {
+            if (!seenNames.has(u.name)) {
+                seenNames.add(u.name);
+                distinctUsers.push(u);
+            }
+        });
+
+        this.editor.updateCollaborators(distinctUsers);
     }
 
     getRandomColor(siteId) {
         const colors = ['#667eea', '#764ba2', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#fee140', '#30cfd0'];
         const index = siteId.length % colors.length;
         return colors[index];
-    }
-
-    _getBookmark() {
-        try {
-            return this.editor.selection.getBookmark(2, true);
-        } catch (e) {
-            return null;
-        }
-    }
-
-    _restoreBookmark(bookmark) {
-        if (!bookmark) return;
-        try {
-            this.editor.selection.moveToBookmark(bookmark);
-        } catch (e) {}
     }
 
     _showStatus(status) {
@@ -455,13 +647,55 @@ class CollaborationClient {
         }
     }
 
+    // Chat Integration Methods
+    initChat() {
+        if (!this.chatEnabled) {
+            console.log('💬 Chat disabled for this instance');
+            return;
+        }
+
+        try {
+            if (typeof CollaborationChat === 'undefined') {
+                console.warn('⚠️ CollaborationChat not loaded! Chat disabled.');
+                return;
+            }
+
+            this.chat = new CollaborationChat({
+                documentId: this.entryId,
+                documentBodyId: this.entryId, // Hub expects documentBodyId
+                userId: this.siteId,
+                userName: this.displayName,
+                color: this.getRandomColor(this.siteId)
+            }).init();
+
+            console.log('💬 Chat initialized for client:', this.entryId);
+        } catch (error) {
+            console.error('❌ Failed to init chat:', error);
+        }
+    }
+
+    destroyChat() {
+        if (this.chat) {
+            this.chat.destroy();
+            this.chat = null;
+        }
+    }
+
+    updateOnlineCount(count) {
+        if (this.chat) {
+            this.chat.updateOnlineCount(count);
+        }
+    }
+
     destroy() {
+        this.destroyChat();
         if (this.connection && this.isConnected) {
             this.connection.invoke('LeaveDocument', this.entryId, this.siteId, this.displayName)
                 .then(() => this.connection.stop())
                 .catch(() => {});
         }
         this.isConnected = false;
-        instances.delete(this.id);
     }
 }
+
+window.CollaborationClient = CollaborationClient;

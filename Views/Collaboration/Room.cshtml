@@ -277,14 +277,7 @@
                                 );
                                 _collabClient.init(editor);
 
-                                // Bind perubahan editor ke collab client
-                                editor.on('Change KeyUp Paste Undo Redo', function () {
-                                    if (_collabClient) {
-                                        _collabClient.sendContentUpdate(editor.getContent());
-                                    }
-                                });
-
-                                // Apply warna cursor dari username (deterministik)
+                                // Bind perubahan editor ditangani secara internal oleh collab client
                                 applyEditorColor(collabUserColor);
                             });
                         }

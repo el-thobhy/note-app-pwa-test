@@ -482,9 +482,15 @@
             
             const normalize = (html) => {
                 let text = html.replace(/<[^>]+>/g, '');
-                text = text.replace(/(&nbsp;)/gi, ' ');
+                text = text.replace(/(&nbsp;|\u00a0)/gi, ' ');
                 return text.replace(/\s+/g, ' ');
             };
+
+            if (normalize(localContent) === normalize(remoteContent)) {
+                const cell = baseCell.cloneNode(true);
+                cell.innerHTML = localContent;
+                return cell;
+            }
 
             if (normalize(localContent) === normalize(baseContent)) {
                 const cell = baseCell.cloneNode(true);
@@ -506,6 +512,12 @@
         }
 
         threeWayMergeText(base, local, remote) {
+            if (local === remote) return local;
+            const normalize = (txt) => {
+                if (!txt) return '';
+                return txt.replace(/(&nbsp;|\u00a0)/gi, ' ').replace(/\s+/g, ' ');
+            };
+            if (normalize(local) === normalize(remote)) return local;
             if (local === base) return remote;
             if (remote === base) return local;
 
