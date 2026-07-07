@@ -576,6 +576,11 @@ class CollaborationClient {
     _safeSetContent(content) {
         if (!this.editor || this.editor.removed) return;
 
+        if (this.editor.getContent() === content) {
+            this.lastContent = content;
+            return;
+        }
+
         let bookmark = null;
         try {
             if (this.editor.selection) {
