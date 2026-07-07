@@ -588,11 +588,66 @@ class CollaborationClient {
                 .trim();
         };
 
-        if (normalizeHTML(this.editor.getContent()) === normalizeHTML(content)) {
+        const currentHTML = this.editor.getContent();
+        if (normalizeHTML(currentHTML) === normalizeHTML(content)) {
             this.lastContent = content;
             return;
         }
 
+        // --- PEMBARUAN SURGIKAL / DOM DIFFING UNTUK MENCEGAH KURSOR LOMPAT ---
+        try {
+            const parser = new DOMParser();
+            const newDoc = parser.parseFromString(content, 'text/html');
+            const newCells = newDoc.querySelectorAll('[id^="cell-"]');
+
+            if (newCells.length > 0) {
+                let surgicallyUpdated = true;
+                const activeNode = this.editor.selection.getNode();
+
+                newCells.forEach(newCell => {
+                    const id = newCell.id;
+                    const liveCell = this.editor.dom.select('#' + id)[0];
+                    if (liveCell) {
+                        const isFocused = liveCell.contains(activeNode) || liveCell === activeNode;
+                        const newHTML = newCell.innerHTML;
+                        const oldHTML = liveCell.innerHTML;
+
+                        if (normalizeHTML(oldHTML) !== normalizeHTML(newHTML)) {
+                            if (!isFocused) {
+                                // Jika tidak sedang diedit/fokus oleh user ini, update secara langsung tanpa menyentuh selection!
+                                liveCell.innerHTML = newHTML;
+                            } else {
+                                // Jika sedang diedit/fokus, update dan gunakan bookmark secara lokal di cell ini saja
+                                let cellBookmark = null;
+                                try {
+                                    cellBookmark = this.editor.selection.getBookmark(2, true);
+                                } catch (e) {}
+
+                                liveCell.innerHTML = newHTML;
+
+                                if (cellBookmark) {
+                                    try {
+                                        this.editor.selection.moveToBookmark(cellBookmark);
+                                    } catch (e) {}
+                                }
+                            }
+                        }
+                    } else {
+                        // Jika ada cell baru yang tidak ditemukan, fallback ke full replace
+                        surgicallyUpdated = false;
+                    }
+                });
+
+                if (surgicallyUpdated) {
+                    this.lastContent = this.editor.getContent();
+                    return;
+                }
+            }
+        } catch (err) {
+            console.warn('[Collab] Surgical update failed, falling back to full replace:', err);
+        }
+
+        // Fallback ke full replace jika surgical update gagal atau tidak didukung
         let bookmark = null;
         try {
             if (this.editor.selection) {
